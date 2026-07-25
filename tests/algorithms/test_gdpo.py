@@ -411,3 +411,62 @@ def test_does_not_warn_when_only_some_groups_collapse(caplog):
         _normalize(_args(), samples)
 
     assert not any("all reward components collapsed" in r.message for r in caplog.records)
+
+
+# ---------------- reward value contract ----------------
+
+
+def test_numpy_scalars_are_accepted():
+    """Reward functions routinely return numpy scalars; only float64 subclasses
+    float."""
+    np = pytest.importorskip("numpy")
+
+    for dtype in (np.float64, np.float32, np.int64, np.int32, np.float16):
+        samples = [
+            _S(0, {"correctness": dtype(1), "format": dtype(0)}),
+            _S(0, {"correctness": dtype(0), "format": dtype(1)}),
+        ]
+        out = extract_reward_components(samples, ["correctness", "format"])
+        assert out.dtype == torch.float32, dtype
+        assert out.shape == (2, 2), dtype
+
+
+def test_numpy_bool_is_still_rejected():
+    np = pytest.importorskip("numpy")
+
+    samples = [_S(0, {"correctness": np.bool_(True), "format": 1.0}) for _ in range(4)]
+    with pytest.raises(TypeError, match="must be a real number"):
+        _normalize(_args(), samples)
+
+
+def test_numpy_nan_is_still_rejected():
+    np = pytest.importorskip("numpy")
+
+    samples = [_S(0, {"correctness": np.float32("nan"), "format": 1.0}) for _ in range(4)]
+    with pytest.raises(ValueError, match="not finite"):
+        _normalize(_args(), samples)
+
+
+# ---------------- weight contract ----------------
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_weights_raise_instead_of_zeroing_the_batch(bad):
+    """Left unchecked these produce an all-zero batch with no error at all."""
+    samples = _mk([0, 0, 0, 0], [1.0, 0.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0])
+    with pytest.raises(ValueError, match="not finite"):
+        _normalize(_args(weights=[bad, 1.0]), samples)
+
+
+# ---------------- collapse detection is exact ----------------
+
+
+def test_component_with_small_relative_spread_is_kept():
+    """A relative tolerance would have erased this component entirely."""
+    groups = [0, 0, 0, 0]
+    correctness = [10000.0, 10000.005, 10000.010, 10000.015]
+    fmt = [1.0, 0.0, 1.0, 0.0]
+    got = _normalize(_args(), _mk(groups, correctness, fmt))
+
+    fmt_only = _manual_gdpo([0.0] * 4, fmt, groups)
+    assert not torch.allclose(torch.tensor(got), torch.tensor(fmt_only), atol=1e-3)

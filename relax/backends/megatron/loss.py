@@ -570,6 +570,10 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         response_lengths=response_lengths,
         total_lengths=total_lengths,
         values=values,
+        # rollout_data holds this rank's global_batch_size/dp_size shard, so any
+        # batch-level statistic has to be reduced over the DP group to describe
+        # the batch rather than the shard.
+        process_group=mpu.get_data_parallel_group(),
     )
 
     # Optional pure OPD mode: remove all non-OPD reward contribution.

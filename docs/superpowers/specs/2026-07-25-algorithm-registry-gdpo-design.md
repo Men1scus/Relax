@@ -227,7 +227,7 @@ RL 条目改为从 spec 名派生标准 RL 角色映射。副作用：`reinforce
 
 ## 7. 已知偏差（写进用户文档，不隐藏）
 
-1. **Step 3 的 D_Batch = advantage 层拿到的批**。colocate 下等于完整训练批（零偏差）；fully-async 下是 `global_batch_size / num_iters_per_train_update` 切片，只影响全局正标量缩放，不改梯度方向与样本排序。
+1. **Step 3 的 D_Batch**。colocate 下 `rollout_data` 是本 DP rank 的 `global_batch_size / dp_size` 分片，因此 `whiten_scalar` 接收 `mpu.get_data_parallel_group()` 并对 `count/sum/sumsq` 做 all-reduce，统计量等于完整训练批。fully-async 下 Advantages 是单副本、无需归约，但每次消费 `global_batch_size / num_iters_per_train_update` 的切片，统计窗口小于训练批——这层偏差保留。
 2. **单 reward 时 GDPO ≠ GRPO**，差一个数据相关的正标量（实测 1.2105863）。Axolotl 文档称「单 reward 时两者等价」不严谨。
 3. **G=2 时逐 key 归一化后恒为 ±0.7071**，幅度信息全丢，权重成为唯一区分度来源。
 

@@ -133,9 +133,14 @@ def convert_samples_to_train_data(args: Any, samples: list[Sample] | list[list[S
     # overwriting the raw reward
     # populate this field for a subset of samples (e.g. SWE but not code).
     if any(sample.metadata and "raw_reward" in sample.metadata for sample in samples):
+        # NOTE(dev): the fallback must stay a scalar. `sample.reward` is a dict
+        # whenever the reward function returns named components (any run using
+        # --reward-key, and every GDPO run), and mixing dicts into this column
+        # makes dict_to_tensordict raise. `raw_rewards` already holds the scalar
+        # that post_process_rewards selected for each sample.
         train_data["raw_reward"] = [
-            sample.metadata["raw_reward"] if sample.metadata and "raw_reward" in sample.metadata else sample.reward
-            for sample in samples
+            sample.metadata["raw_reward"] if sample.metadata and "raw_reward" in sample.metadata else raw_reward
+            for sample, raw_reward in zip(samples, raw_rewards, strict=True)
         ]
 
     # For rollout buffer

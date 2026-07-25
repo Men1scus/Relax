@@ -11,11 +11,12 @@ single scalar here.
 """
 
 import math
+from numbers import Real
 from typing import Any, Callable
 
 import torch
 
-from relax.algorithms.numerics import STD_EPS, collapse_mask
+from relax.algorithms.numerics import STD_EPS, collapsed_columns
 from relax.utils.logging_utils import get_logger
 
 
@@ -102,7 +103,14 @@ def resolve_gdpo_weights(args: Any, keys: list[str]) -> list[float]:
         return [1.0] * len(keys)
     if len(weights) != len(keys):
         raise ValueError(f"--gdpo-reward-weights has {len(weights)} entries but --gdpo-reward-keys has {len(keys)}.")
-    return [float(w) for w in weights]
+    resolved = [float(w) for w in weights]
+    for key, weight in zip(keys, resolved, strict=True):
+        # argparse happily parses "nan" and "inf" for a float option. Unchecked,
+        # the weighted sum turns non-finite, whiten_scalar reads a non-finite std
+        # as a collapse, and the batch silently produces zero advantages.
+        if not math.isfinite(weight):
+            raise ValueError(f"--gdpo-reward-weights for {key!r} is {weight}, which is not finite.")
+    return resolved
 
 
 def extract_reward_components(samples: list[Any], keys: list[str]) -> torch.Tensor:
@@ -117,8 +125,12 @@ def extract_reward_components(samples: list[Any], keys: list[str]) -> torch.Tens
         values = sample.get_reward_components(keys)
         row: list[float] = []
         for key, value in zip(keys, values, strict=True):
-            # bool is a subclass of int; a boolean reward is almost always a bug.
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            # `numbers.Real` rather than `(int, float)`: reward functions routinely
+            # return numpy scalars, and only np.float64 happens to subclass float —
+            # np.float32/np.int64 would be rejected while np.float64 sailed through.
+            # bool and np.bool_ stay rejected (bool subclasses int; np.bool_ is not
+            # a Real), because a boolean reward is almost always a mistake.
+            if isinstance(value, bool) or not isinstance(value, Real):
                 raise TypeError(
                     f"Reward {key!r} of sample {position} must be a real number, "
                     f"got {value!r} ({type(value).__name__})."
@@ -157,7 +169,7 @@ def normalize_gdpo_decoupled(args: Any, samples: list[Any], raw_rewards: list[fl
         group = components[positions]
         centered = group - group.mean(dim=0, keepdim=True)
         std = group.std(dim=0)
-        collapsed = collapse_mask(group, std, dim=0)
+        collapsed = collapsed_columns(group, dim=0)
         scaled = centered / (std + GROUP_EPS)
         normalized[positions] = torch.where(collapsed.unsqueeze(0), torch.zeros_like(scaled), scaled)
         if bool(collapsed.all()):

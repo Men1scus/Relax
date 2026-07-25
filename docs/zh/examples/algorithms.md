@@ -214,7 +214,7 @@ GDPO_ARGS=(
 
 以下三点是实现与论文之间的实际差异，训练前请确认可以接受：
 
-1. **第三步的 batch 边界**。白化发生在 advantage 层拿到的那一批数据上。colocate 模式下它等于完整训练批，与论文一致；fully-async 模式下是 `global_batch_size / num_iters_per_train_update` 的切片。这只影响一个全局正标量缩放，不改变梯度方向或样本排序。
+1. **第三步的 batch 边界**。colocate 模式下，每个数据并行 rank 只持有 `global_batch_size / dp_size` 的分片，因此第三步会对 `count/sum/sumsq` 做一次跨 DP 的 all-reduce，统计量覆盖完整训练批，与论文一致。fully-async 模式下 Advantages 是单副本，无需归约，但它每次消费的是 `global_batch_size / num_iters_per_train_update` 的切片——统计窗口小于完整训练批，这一层偏差仍然存在。
 2. **单个奖励时 GDPO 不退化为 GRPO**。第三步仍然生效，结果与 GRPO 相差一个正标量（与数据相关，实测约 1.21）。要 GRPO 语义就直接用 `--advantage-estimator grpo`。
 3. **$G=2$ 时幅度信息丢失**。任意两个不同值经无偏标准化后恒为 $\pm 1/\sqrt{2}$，此时分量之间的区分度只来自权重。
 

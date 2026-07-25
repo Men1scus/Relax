@@ -214,7 +214,7 @@ A complete runnable example lives in [`examples/gdpo/`](https://github.com/redai
 
 Three differences between this implementation and the paper. Confirm they are acceptable before training:
 
-1. **Step 3's batch boundary.** Whitening runs over whatever batch reaches the advantage stage. Under colocate that is the full training batch, matching the paper; under fully-async it is a `global_batch_size / num_iters_per_train_update` slice. This only changes a global positive scale factor — gradient direction and sample ordering are unaffected.
+1. **Step 3's batch boundary.** Under colocate each data-parallel rank holds only a `global_batch_size / dp_size` shard, so step 3 all-reduces `count/sum/sumsq` across the DP group and the statistics describe the full training batch, matching the paper. Under fully-async the Advantages deployment is a single replica and needs no reduction, but it consumes one `global_batch_size / num_iters_per_train_update` slice at a time, so its statistics window is still narrower than the training batch.
 2. **A single reward does not reduce to GRPO.** Step 3 still applies, leaving a positive scalar difference from GRPO (data-dependent, measured around 1.21). Use `--advantage-estimator grpo` if you want GRPO semantics.
 3. **$G=2$ discards magnitude.** Any two distinct values standardize to exactly $\pm 1/\sqrt{2}$, so with a group of two the only thing distinguishing components is their weights.
 

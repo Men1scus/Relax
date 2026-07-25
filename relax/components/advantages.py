@@ -164,6 +164,11 @@ class Advantages(Base):
             response_lengths=response_lengths,
             total_lengths=total_lengths,
             values=values,
+            # This deployment is a single replica and owns every sample it was
+            # handed, so batch statistics need no reduction. Note the batch is
+            # one `global_batch_size / num_iters_per_train_update` slice, not
+            # the whole training batch — see the GDPO notes in the docs.
+            process_group=None,
         )
 
         # Optional pure OPD mode: remove all non-OPD reward contribution.

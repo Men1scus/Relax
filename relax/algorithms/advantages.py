@@ -17,8 +17,9 @@ runs, ``rewards`` already holds one normalised scalar per sample.
 from typing import Any, Callable
 
 import torch
+import torch.distributed as dist
 
-from relax.algorithms.numerics import STD_EPS, is_collapsed
+from relax.algorithms.numerics import STD_EPS, distributed_mean_std, is_collapsed
 from relax.algorithms.spec import get_algorithm
 from relax.utils.training.ppo_utils import (
     get_advantages_and_returns_batch,
@@ -28,7 +29,7 @@ from relax.utils.training.ppo_utils import (
 )
 
 
-def whiten_scalar(values: torch.Tensor) -> torch.Tensor:
+def whiten_scalar(values: torch.Tensor, *, process_group: dist.ProcessGroup | None = None) -> torch.Tensor:
     """Sequence-level whitening of one scalar per sample.
 
     This is GDPO's batch-wise normalisation (arXiv 2601.05242, Eq. 6).  It is
@@ -36,15 +37,21 @@ def whiten_scalar(values: torch.Tensor) -> torch.Tensor:
     ``--normalize-advantages``: weighting by token count would let long
     responses dominate the statistics, which Eq. 6 does not do.
 
-    A degenerate batch returns exact zeros rather than amplified rounding
-    noise; see :data:`relax.algorithms.numerics.COLLAPSE_RTOL`.
+    ``process_group`` must be supplied wherever the caller holds only a shard of
+    the batch.  Each data-parallel rank owns ``global_batch_size / dp_size``
+    samples, so whitening locally would give every rank its own mean and scale —
+    not the "one global scale factor" the maths assumes.  Callers that already
+    hold the whole batch (the single-replica Ray Serve deployment) pass ``None``.
+
+    A batch where every value is identical returns exact zeros; see
+    :func:`relax.algorithms.numerics.is_collapsed`.
     """
-    if values.numel() < 2:
+    if is_collapsed(values, process_group=process_group):
         return torch.zeros_like(values)
-    std = values.std()
-    if is_collapsed(values, std):
+    mean, std = distributed_mean_std(values, process_group=process_group)
+    if not torch.isfinite(std):
         return torch.zeros_like(values)
-    return (values - values.mean()) / (std + STD_EPS)
+    return (values - mean) / (std + STD_EPS)
 
 
 def _as_reward_tensor(rewards: Any, kl: list[torch.Tensor]) -> torch.Tensor:
@@ -61,7 +68,7 @@ def advantage_grpo_broadcast(args: Any, *, rewards, kl, **_unused):
     return advantages, returns
 
 
-def advantage_gdpo(args: Any, *, rewards, kl, **_unused):
+def advantage_gdpo(args: Any, *, rewards, kl, process_group=None, **_unused):
     """GDPO step 3: whiten the combined per-sample advantage, then broadcast.
 
     Steps 1 and 2 (per-reward group standardisation and the weighted sum) ran
@@ -72,7 +79,7 @@ def advantage_gdpo(args: Any, *, rewards, kl, **_unused):
     tail flushes.
     """
     reward_tensor = _as_reward_tensor(rewards, kl)
-    returns = get_grpo_returns(whiten_scalar(reward_tensor), kl)
+    returns = get_grpo_returns(whiten_scalar(reward_tensor, process_group=process_group), kl)
     advantages = list(returns)
     return advantages, returns
 
@@ -147,9 +154,14 @@ def compute_advantages_and_returns(
     response_lengths: list[int] | None = None,
     total_lengths: list[int] | None = None,
     values: list[torch.Tensor] | None = None,
+    process_group: dist.ProcessGroup | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Dispatch to the estimator registered for
-    ``args.advantage_estimator``."""
+    """Dispatch to the estimator registered for ``args.advantage_estimator``.
+
+    ``process_group`` is the group across which the batch is sharded, or
+    ``None`` when the caller holds every sample. Estimators that compute batch-
+    level statistics need it to see the whole batch.
+    """
     spec = get_algorithm(args.advantage_estimator)
     fn = ADVANTAGE_FNS[spec.advantage_fn]
     return fn(
@@ -160,4 +172,5 @@ def compute_advantages_and_returns(
         response_lengths=response_lengths,
         total_lengths=total_lengths,
         values=values,
+        process_group=process_group,
     )

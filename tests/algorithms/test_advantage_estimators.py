@@ -156,3 +156,85 @@ def test_gdpo_collapsed_batch_gives_zero_advantages():
     adv, _ = compute_advantages_and_returns(_args("gdpo"), rewards=[0.7, 0.7], **_inputs())
     assert torch.equal(adv[0], torch.zeros(3))
     assert torch.equal(adv[1], torch.zeros(2))
+
+
+# ---------------- collapse detection is exact ----------------
+
+
+def test_collapse_uses_exact_equality_not_a_relative_tolerance():
+    """A relative tolerance erased this perfectly informative batch."""
+    values = torch.tensor([10000.0, 10000.005, 10000.010, 10000.015])
+    out = whiten_scalar(values)
+    assert not torch.equal(out, torch.zeros_like(out))
+    assert torch.equal(values.argsort(), out.argsort())
+
+
+@pytest.mark.parametrize("magnitude", [0.0, 0.1, 0.7, 1.0, 1e6, -3.5])
+def test_identical_values_collapse_exactly_at_any_magnitude(magnitude):
+    out = whiten_scalar(torch.full((7,), magnitude))
+    assert torch.equal(out, torch.zeros(7))
+
+
+def test_two_values_differing_by_one_ulp_are_not_collapsed():
+    base = torch.tensor(1.0)
+    values = torch.stack([base, torch.nextafter(base, torch.tensor(2.0))] * 2)
+    out = whiten_scalar(values)
+    # eps damps it to near-zero rather than amplifying, but it is not forced to 0
+    assert out.abs().max() < 1.0
+
+
+def test_empty_batch_is_treated_as_collapsed():
+    assert whiten_scalar(torch.tensor([])).numel() == 0
+
+
+# ---------------- distributed statistics ----------------
+
+
+def test_distributed_mean_std_without_a_group_matches_torch():
+    from relax.algorithms.numerics import distributed_mean_std
+
+    values = torch.tensor([1.0, 2.0, 4.0, 8.0])
+    mean, std = distributed_mean_std(values)
+    assert torch.allclose(mean, values.mean())
+    assert torch.allclose(std, values.std(), atol=1e-5)
+
+
+def test_whiten_scalar_matches_manual_formula_without_a_group():
+    values = torch.tensor([1.0, 2.0, 4.0, 8.0])
+    expected = (values - values.mean()) / (values.std() + 1e-6)
+    assert torch.allclose(whiten_scalar(values), expected, atol=1e-5)
+
+
+def test_sharded_whitening_differs_from_local_whitening():
+    """Why the process group matters: local stats give each shard its own
+    scale.
+
+    Simulates two DP ranks by whitening each shard alone and comparing against
+    whitening the concatenated batch.
+    """
+    shard_a = torch.tensor([-0.7, 0.7])
+    shard_b = torch.tensor([-1.4, 1.4])
+
+    local = torch.cat([whiten_scalar(shard_a), whiten_scalar(shard_b)])
+    joint = whiten_scalar(torch.cat([shard_a, shard_b]))
+
+    # Local whitening flattens the two shards onto the same amplitude; the joint
+    # statistics keep shard_b's larger relative contribution.
+    assert torch.allclose(local[:2].abs(), local[2:].abs(), atol=1e-4)
+    assert not torch.allclose(joint[:2].abs(), joint[2:].abs(), atol=1e-2)
+
+
+def test_compute_advantages_and_returns_accepts_a_process_group_kwarg():
+    """Both call sites pass it; every estimator must tolerate it."""
+    from relax.algorithms import list_algorithm_names
+    from relax.algorithms.spec import get_algorithm
+
+    # "gae" needs a critic and "reinforce_plus_plus" imports megatron.core for the
+    # CP world size; neither is available on a CPU-only runner.
+    needs_megatron = {"gae", "reinforce_plus_plus"}
+    for name in list_algorithm_names():
+        if get_algorithm(name).advantage_fn in needs_megatron:
+            continue
+        args = _args(name, kl_coef=0.0)
+        adv, _ = compute_advantages_and_returns(args, rewards=[0.5, -0.5], process_group=None, **_inputs())
+        assert len(adv) == 2

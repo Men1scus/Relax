@@ -63,7 +63,7 @@ GDPO_ARGS=(
 
 ## 已知偏差
 
-1. **第三步的 batch 边界**。batch 白化作用在 advantage 层拿到的那一批上。本示例是 colocate 模式，等于完整训练批，与论文一致；fully-async 下会变成训练批的切片，影响一个全局正标量缩放。
+1. **第三步的 batch 边界**。colocate 下每个 DP rank 只持有 `global_batch_size / dp_size` 的分片，第三步会跨 DP all-reduce 统计量，因此覆盖完整训练批；fully-async 下 Advantages 单副本每次只消费训练批的一个切片，统计窗口偏小。
 2. **单个奖励时 GDPO 不等于 GRPO**，差一个正标量。要 GRPO 语义就用 `--advantage-estimator grpo`。
 3. **`--n-samples-per-prompt 2` 时幅度信息丢失**：任意两个不同值标准化后恒为 ±0.7071。示例用 8 就是为了避开这一点。
 

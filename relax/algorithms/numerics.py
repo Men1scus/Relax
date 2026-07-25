@@ -9,6 +9,7 @@ from drifting apart.
 """
 
 import torch
+import torch.distributed as dist
 
 
 STD_EPS = 1e-6
@@ -21,33 +22,62 @@ implementations disagree (the GDPO paper writes no epsilon at all, TRL uses
 parity because it is what makes the equivalence tests meaningful.
 """
 
-COLLAPSE_RTOL = 1e-6
-"""Relative tolerance for calling a spread "no signal at all".
 
-This has to be relative rather than absolute.  Summing N equal float32 values
-and dividing by N does not return the value exactly, so a genuinely collapsed
-group still has a residual standard deviation proportional to its magnitude:
-0.7 repeated seven times gives std ~= 6.4e-8.  An absolute threshold tight
-enough for small rewards would miss that, and ``residual / (residual + 1e-6)``
-then amplifies pure rounding noise into a +-5.6e-2 "advantage".  float32
-epsilon is ~1.2e-7, so 1e-6 leaves room for accumulated rounding while staying
-far below any real reward spread.
-"""
+def is_collapsed(values: torch.Tensor, *, process_group: dist.ProcessGroup | None = None) -> bool:
+    """Whether every value is identical, i.e. the spread carries no signal.
 
-
-def is_collapsed(values: torch.Tensor, std: torch.Tensor) -> bool:
-    """Whether ``values`` carry only rounding noise rather than usable
-    signal."""
-    if not torch.isfinite(std):
+    Tested by exact equality rather than by comparing the standard deviation
+    against a tolerance.  A tolerance has to be relative to the magnitude (the
+    mean of N equal float32 values does not come back exactly equal to them, so
+    a collapsed group still shows std ~= 1e-8 times its magnitude), and any
+    relative tolerance large enough to catch that also erases real signal: with
+    ``std <= 1e-6 * max|x|``, the perfectly informative batch
+    ``[10000, 10000.005, 10000.010, 10000.015]`` is thrown away.  Exact equality
+    has no such false positives, and near-equality is already damped by
+    :data:`STD_EPS`.
+    """
+    if values.numel() == 0:
         return True
-    return bool(std <= COLLAPSE_RTOL * values.abs().max())
+    low, high = values.min(), values.max()
+    if process_group is not None:
+        bounds = torch.stack([-low, high])
+        dist.all_reduce(bounds, op=dist.ReduceOp.MAX, group=process_group)
+        low, high = -bounds[0], bounds[1]
+    return bool(low == high)
 
 
-def collapse_mask(values: torch.Tensor, std: torch.Tensor, dim: int) -> torch.Tensor:
+def collapsed_columns(values: torch.Tensor, dim: int) -> torch.Tensor:
     """Per-column version of :func:`is_collapsed` for a ``[G, K]`` group.
 
-    Returns a boolean tensor shaped like ``std``: ``True`` where that column's
-    spread is indistinguishable from rounding noise.
+    Returns a boolean tensor of shape ``[K]``: ``True`` where that reward
+    component took the same value across the whole group.
     """
-    scale = values.abs().amax(dim=dim)
-    return ~torch.isfinite(std) | (std <= COLLAPSE_RTOL * scale)
+    return values.amax(dim=dim) == values.amin(dim=dim)
+
+
+def distributed_mean_std(
+    values: torch.Tensor, *, process_group: dist.ProcessGroup | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Mean and unbiased std of ``values``, optionally across
+    ``process_group``.
+
+    Each rank holds its own shard of the batch, so a local ``std()`` would give
+    every rank a different scale factor.  Reducing ``count/sum/sumsq`` makes the
+    statistics describe the whole batch, which is what the framework already
+    does for ``--normalize-advantages`` (see
+    ``relax.utils.distributed_utils.distributed_masked_whiten``).
+    """
+    total = values.sum()
+    total_sq = (values * values).sum()
+    count = torch.tensor(float(values.numel()), dtype=values.dtype, device=values.device)
+
+    if process_group is not None:
+        stats = torch.stack([count, total, total_sq])
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=process_group)
+        count, total, total_sq = stats[0], stats[1], stats[2]
+
+    mean = total / count
+    # Bessel-corrected, matching torch.std()'s default so the single-reward GDPO
+    # scale factor stays derivable from the GRPO group statistics.
+    variance = (total_sq - count * mean * mean) / torch.clamp(count - 1, min=1.0)
+    return mean, torch.sqrt(torch.clamp(variance, min=0.0))
