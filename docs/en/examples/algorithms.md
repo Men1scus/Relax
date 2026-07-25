@@ -159,6 +159,74 @@ SAPO_ARGS=(
 
 ---
 
+## GDPO
+
+GDPO (Group reward-Decoupled Normalization Policy Optimization, [arXiv 2601.05242](https://arxiv.org/abs/2601.05242)) targets **multi-reward** training. It standardizes each reward component within its prompt group and only then combines them, instead of summing the rewards first and normalizing once as GRPO does.
+
+### How It Works
+
+For prompt $i$ with $G$ rollouts and $n$ reward components:
+
+**Step 1 — per-reward group standardization:**
+
+$$A_k^{(i,j)} = \frac{r_k^{(i,j)} - \mathrm{mean}_j\{r_k^{(i,\cdot)}\}}{\mathrm{std}_j\{r_k^{(i,\cdot)}\} + \epsilon}$$
+
+**Step 2 — weighted sum:**
+
+$$A_\text{sum}^{(i,j)} = \sum_k w_k A_k^{(i,j)}$$
+
+The weights multiply the **normalized** advantages, not the raw rewards. After step 1 every component is on the same scale, so a weight expresses relative importance rather than the component's units.
+
+**Step 3 — batch-wise whitening:**
+
+$$\hat{A}^{(i,j)} = \frac{A_\text{sum}^{(i,j)} - \mathrm{mean}_\text{batch}}{\mathrm{std}_\text{batch} + \epsilon}$$
+
+**Why this beats GRPO:** when one component is constant across a group (reward collapse), GRPO's summed reward collapses too, the whole group's advantages go to zero, and the samples are wasted. Under GDPO only *that component* contributes zero while the others still carry signal.
+
+### Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--advantage-estimator gdpo` | — | Enable GDPO |
+| `--gdpo-reward-keys` | — | **Required**, at least two. Keys in the reward dict to standardize independently, e.g. `correctness format` |
+| `--gdpo-reward-weights` | all 1.0 | Per-component weights; length must match `--gdpo-reward-keys` |
+| `--reward-key` | — | **Required**; selects the scalar used for metrics and the `raw_reward` column |
+| `--n-samples-per-prompt` | — | Must be >= 2 (the unbiased group std is undefined at $G=1$) |
+
+The reward function must return a dict containing every key. A missing key, a non-numeric value, a bool, or NaN/Inf raises rather than defaulting to 0.0 — a silently zeroed component is indistinguishable from a genuinely collapsed one.
+
+### Quick Start
+
+```bash
+GDPO_ARGS=(
+   --advantage-estimator gdpo
+   --gdpo-reward-keys correctness format
+   --gdpo-reward-weights 1.0 1.0
+   --custom-rm-path examples.gdpo.reward_gdpo.reward_func
+   --reward-key score
+   --n-samples-per-prompt 8
+)
+```
+
+A complete runnable example lives in [`examples/gdpo/`](https://github.com/redai-infra/Relax/tree/main/examples/gdpo).
+
+### Known Deviations
+
+Three differences between this implementation and the paper. Confirm they are acceptable before training:
+
+1. **Step 3's batch boundary.** Whitening runs over whatever batch reaches the advantage stage. Under colocate that is the full training batch, matching the paper; under fully-async it is a `global_batch_size / num_iters_per_train_update` slice. This only changes a global positive scale factor — gradient direction and sample ordering are unaffected.
+2. **A single reward does not reduce to GRPO.** Step 3 still applies, leaving a positive scalar difference from GRPO (data-dependent, measured around 1.21). Use `--advantage-estimator grpo` if you want GRPO semantics.
+3. **$G=2$ discards magnitude.** Any two distinct values standardize to exactly $\pm 1/\sqrt{2}$, so with a group of two the only thing distinguishing components is their weights.
+
+### Mutually Exclusive Options
+
+- `--normalize-advantages`: step 3 already whitens per sequence; adding the token-level pass on top is not meaningful.
+- `--custom-reward-post-process-path`: that hook short-circuits reward post-processing entirely, silently skipping steps 1 and 2 while the run still reports itself as GDPO.
+
+Both combinations fail during argument validation.
+
+---
+
 ## Algorithm Comparison
 
 | Algorithm | Advantage Computation | Policy Loss | KL Constraint |
@@ -167,6 +235,7 @@ SAPO_ARGS=(
 | **CISPO** | Group-relative reward | Stop-gradient coefficient | Recommended KL loss |
 | **GSPO** | Group-relative reward | PPO-Clip + sequence-level KL | Sequence-level ratio |
 | **SAPO** | Group-relative reward | Sigmoid gate | Temperature-controlled |
+| **GDPO** | Per-reward group standardization + weighted sum + batch whitening | PPO-Clip (hard clip) | Optional KL loss |
 
 ## Next Steps
 

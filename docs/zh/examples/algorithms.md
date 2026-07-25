@@ -159,6 +159,74 @@ SAPO_ARGS=(
 
 ---
 
+## GDPO
+
+GDPO（Group reward-Decoupled Normalization Policy Optimization，[arXiv 2601.05242](https://arxiv.org/abs/2601.05242)）面向**多奖励**训练。它对每个奖励分量分别做组内标准化，再合并——而不是像 GRPO 那样先把多个奖励加起来再归一化。
+
+### 算法原理
+
+设第 $i$ 个 prompt 采样 $G$ 条 rollout，共 $n$ 个奖励分量。
+
+**第一步 —— 逐奖励组内标准化**：
+
+$$A_k^{(i,j)} = \frac{r_k^{(i,j)} - \mathrm{mean}_j\{r_k^{(i,\cdot)}\}}{\mathrm{std}_j\{r_k^{(i,\cdot)}\} + \epsilon}$$
+
+**第二步 —— 加权求和**：
+
+$$A_\text{sum}^{(i,j)} = \sum_k w_k A_k^{(i,j)}$$
+
+注意权重乘在**归一化后的 advantage** 上，不是乘在原始 reward 上。经过第一步各分量已在同一尺度，权重表达的是相对重要性，而不是分量的量纲。
+
+**第三步 —— batch 级白化**：
+
+$$\hat{A}^{(i,j)} = \frac{A_\text{sum}^{(i,j)} - \mathrm{mean}_\text{batch}}{\mathrm{std}_\text{batch} + \epsilon}$$
+
+**相对 GRPO 的收益**：某个分量在组内全相同时（reward collapse），GRPO 的总奖励也会塌缩，整组样本 advantage 归零、被白白丢弃；GDPO 下只有**该分量**贡献 0，其它分量仍然提供学习信号。
+
+### 关键参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--advantage-estimator gdpo` | — | 启用 GDPO |
+| `--gdpo-reward-keys` | — | **必填**，至少两个。奖励函数返回的 dict 中要独立归一化的 key，如 `correctness format` |
+| `--gdpo-reward-weights` | 全 1.0 | 各分量权重，长度须与 `--gdpo-reward-keys` 一致 |
+| `--reward-key` | — | **必填**，选出用于 metrics 与 `raw_reward` 列的标量 |
+| `--n-samples-per-prompt` | — | 必须 ≥ 2（组内无偏标准差在 $G=1$ 时无定义） |
+
+奖励函数必须返回包含全部 key 的 dict。缺 key、非数值、bool、NaN/Inf 都会直接报错而不是填 0——静默填 0 会把契约违约伪装成真实的 reward collapse。
+
+### 快速开始
+
+```bash
+GDPO_ARGS=(
+   --advantage-estimator gdpo
+   --gdpo-reward-keys correctness format
+   --gdpo-reward-weights 1.0 1.0
+   --custom-rm-path examples.gdpo.reward_gdpo.reward_func
+   --reward-key score
+   --n-samples-per-prompt 8
+)
+```
+
+完整可运行示例见 [`examples/gdpo/`](https://github.com/redai-infra/Relax/tree/main/examples/gdpo)。
+
+### 已知偏差
+
+以下三点是实现与论文之间的实际差异，训练前请确认可以接受：
+
+1. **第三步的 batch 边界**。白化发生在 advantage 层拿到的那一批数据上。colocate 模式下它等于完整训练批，与论文一致；fully-async 模式下是 `global_batch_size / num_iters_per_train_update` 的切片。这只影响一个全局正标量缩放，不改变梯度方向或样本排序。
+2. **单个奖励时 GDPO 不退化为 GRPO**。第三步仍然生效，结果与 GRPO 相差一个正标量（与数据相关，实测约 1.21）。要 GRPO 语义就直接用 `--advantage-estimator grpo`。
+3. **$G=2$ 时幅度信息丢失**。任意两个不同值经无偏标准化后恒为 $\pm 1/\sqrt{2}$，此时分量之间的区分度只来自权重。
+
+### 互斥项
+
+- 不能与 `--normalize-advantages` 同用：第三步已经做过序列级白化，再叠加 token 级白化没有意义。
+- 不能与 `--custom-reward-post-process-path` 同用：该钩子会整段短路奖励后处理，导致第一、二步被静默跳过，而训练日志仍然显示算法是 GDPO。
+
+两者都会在参数校验阶段直接报错。
+
+---
+
 ## 算法对比
 
 | 算法 | Advantage 计算 | 策略损失 | KL 约束方式 |
@@ -167,6 +235,7 @@ SAPO_ARGS=(
 | **CISPO** | 组相对奖励 | Stop-gradient 系数 | 推荐 KL loss |
 | **GSPO** | 组相对奖励 | PPO-Clip + 序列级 KL | 序列级 ratio |
 | **SAPO** | 组相对奖励 | Sigmoid 门控 | 温度控制 |
+| **GDPO** | 逐奖励组内标准化 + 加权求和 + batch 白化 | PPO-Clip（硬裁剪） | 可选 KL loss |
 
 ## 下一步
 

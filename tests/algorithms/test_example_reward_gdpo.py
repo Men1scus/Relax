@@ -1,0 +1,130 @@
+# Copyright (c) 2026 Relax Authors. All Rights Reserved.
+
+"""The shipped GDPO example reward must produce the two configured
+components."""
+
+import importlib.util
+import pathlib
+
+import pytest
+
+
+EXAMPLE_DIR = pathlib.Path(__file__).resolve().parents[2] / "examples" / "gdpo"
+REWARD_PATH = EXAMPLE_DIR / "reward_gdpo.py"
+SCRIPT_PATH = EXAMPLE_DIR / "run-qwen3-0.6B-1xgpu-gdpo.sh"
+
+
+@pytest.fixture(scope="module")
+def reward_module():
+    spec = importlib.util.spec_from_file_location("reward_gdpo", REWARD_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_returns_all_three_keys(reward_module):
+    out = reward_module.compute_gdpo_reward("<think>x</think><answer>42</answer>", "42")
+    assert set(out) == {"score", "correctness", "format"}
+
+
+def test_correct_and_well_formatted(reward_module):
+    out = reward_module.compute_gdpo_reward("<think>reasoning</think><answer>42</answer>", "42")
+    assert out["correctness"] == 1.0
+    assert out["format"] == 1.0
+
+
+def test_wrong_answer_but_well_formatted(reward_module):
+    out = reward_module.compute_gdpo_reward("<think>reasoning</think><answer>7</answer>", "42")
+    assert out["correctness"] == 0.0
+    assert out["format"] == 1.0
+
+
+def test_correct_answer_but_malformed(reward_module):
+    """The case GDPO is designed for: the components disagree."""
+    out = reward_module.compute_gdpo_reward("42", "42")
+    assert out["correctness"] == 0.0  # no <answer> tag means the answer is unparseable
+    assert out["format"] == 0.0
+
+
+def test_partially_formatted_scores_half(reward_module):
+    out = reward_module.compute_gdpo_reward("<answer>42</answer>", "42")
+    assert out["format"] == 0.5
+    assert out["correctness"] == 1.0
+
+
+def test_thinking_without_an_answer_scores_half_format(reward_module):
+    out = reward_module.compute_gdpo_reward("<think>reasoning</think>", "42")
+    assert out["format"] == 0.5
+    assert out["correctness"] == 0.0
+
+
+def test_score_mirrors_correctness(reward_module):
+    for response in ("<answer>42</answer>", "<answer>7</answer>", "nothing"):
+        out = reward_module.compute_gdpo_reward(response, "42")
+        assert out["score"] == out["correctness"]
+
+
+def test_label_is_stringified_and_stripped(reward_module):
+    assert reward_module.compute_gdpo_reward("<answer>42</answer>", 42)["correctness"] == 1.0
+    assert reward_module.compute_gdpo_reward("<answer>42</answer>", " 42 ")["correctness"] == 1.0
+
+
+def test_components_are_plain_floats(reward_module):
+    out = reward_module.compute_gdpo_reward("<answer>42</answer>", "42")
+    for key in ("score", "correctness", "format"):
+        assert isinstance(out[key], float)
+        assert not isinstance(out[key], bool)
+
+
+def test_components_survive_the_gdpo_normalizer(reward_module):
+    """End-to-end: example rewards feed the registered normalizer without error."""
+    from types import SimpleNamespace
+
+    from relax.algorithms.rewards import normalize_gdpo_decoupled
+
+    responses = [
+        "<think>a</think><answer>42</answer>",
+        "<think>b</think><answer>7</answer>",
+        "<answer>42</answer>",
+        "nothing at all",
+    ]
+    samples = [
+        SimpleNamespace(
+            group_index=0,
+            reward=reward_module.compute_gdpo_reward(r, "42"),
+            get_reward_components=lambda keys, r=r: [reward_module.compute_gdpo_reward(r, "42")[k] for k in keys],
+        )
+        for r in responses
+    ]
+    args = SimpleNamespace(
+        n_samples_per_prompt=4,
+        gdpo_reward_keys=["correctness", "format"],
+        gdpo_reward_weights=None,
+    )
+
+    out = normalize_gdpo_decoupled(args, samples, [0.0] * 4)
+    assert len(out) == 4
+    assert abs(sum(out)) < 1e-4  # both components are group-centred
+    assert max(abs(v) for v in out) > 0.1  # and there is real signal
+
+
+# ---------------- launch script ----------------
+
+
+def test_launch_script_wires_the_reward_to_the_estimator():
+    src = SCRIPT_PATH.read_text(encoding="utf-8")
+    assert "--advantage-estimator gdpo" in src
+    assert "--gdpo-reward-keys correctness format" in src
+    assert "--custom-rm-path examples.gdpo.reward_gdpo.reward_func" in src
+    assert "--reward-key score" in src
+
+
+def test_launch_script_satisfies_the_gdpo_group_size_floor():
+    src = SCRIPT_PATH.read_text(encoding="utf-8")
+    assert "--n-samples-per-prompt 8" in src
+
+
+def test_launch_script_does_not_enable_the_conflicting_whitening():
+    src = SCRIPT_PATH.read_text(encoding="utf-8")
+    assert "--normalize-advantages" not in src
+    assert "--custom-reward-post-process-path" not in src

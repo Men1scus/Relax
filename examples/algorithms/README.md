@@ -14,6 +14,7 @@ Relax 框架集成了多种策略梯度算法，均通过 `--advantage-estimator
 | **CISPO** | `--advantage-estimator cispo` | 保留梯度方向、需要更高精度 |
 | **GSPO**  | `--advantage-estimator gspo`  | 序列级约束、稳定训练       |
 | **SAPO**  | `--advantage-estimator sapo`  | 平滑优化、soft 信任域      |
+| **GDPO**  | `--advantage-estimator gdpo`  | 多奖励、分量独立归一化     |
 
 ## 选择建议
 
@@ -40,6 +41,13 @@ Relax 框架集成了多种策略梯度算法，均通过 `--advantage-estimator
 - 用 sigmoid 门控替代硬裁剪
 - 梯度流更平滑，避免梯度突变
 - 适合对稳定性要求高的场景
+
+### GDPO（多奖励）
+
+- 每个 reward 分量分别做组内标准化，再加权合并
+- 某个分量组内塌缩时，其它分量仍保留学习信号（GRPO 会丢掉整组）
+- 适合 correctness + format、correctness + length 这类多目标任务
+- 详见 [examples/gdpo/](../gdpo/README.md)
 
 ## 快速开始
 
@@ -115,13 +123,13 @@ bash scripts/training/text/run-qwen3-4B-8xgpu.sh
 
 ### 通用参数
 
-| 参数                    | 默认值               | 说明                                                                                                    |
-| ----------------------- | -------------------- | ------------------------------------------------------------------------------------------------------- |
-| `--advantage-estimator` | `grpo`               | 算法类型：`grpo`, `cispo`, `gspo`, `sapo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline` |
-| `--eps-clip`            | `0.2`                | 下方裁剪边距（ratio 下界 = `1 - eps_clip`）                                                             |
-| `--eps-clip-high`       | 与 `--eps-clip` 相同 | 上方裁剪边距（ratio 上界 = `1 + eps_clip_high`）                                                        |
-| `--clip-grad`           | —                    | 梯度裁剪范数，CISPO 下推荐设为 `1.0`                                                                    |
-| `--kl-coef`             | `0.0`                | KL 惩罚系数（PPO、REINFORCE++ 等用）                                                                    |
+| 参数                    | 默认值               | 说明                                                                                                                                                           |
+| ----------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--advantage-estimator` | `grpo`               | 算法类型：`grpo`, `cispo`, `gspo`, `sapo`, `gdpo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`（完整列表由 `relax/algorithms/spec.py` 的注册表生成） |
+| `--eps-clip`            | `0.2`                | 下方裁剪边距（ratio 下界 = `1 - eps_clip`）                                                                                                                    |
+| `--eps-clip-high`       | 与 `--eps-clip` 相同 | 上方裁剪边距（ratio 上界 = `1 + eps_clip_high`）                                                                                                               |
+| `--clip-grad`           | —                    | 梯度裁剪范数，CISPO 下推荐设为 `1.0`                                                                                                                           |
+| `--kl-coef`             | `0.0`                | KL 惩罚系数（PPO、REINFORCE++ 等用）                                                                                                                           |
 
 ### CISPO 专用参数
 
@@ -138,6 +146,17 @@ bash scripts/training/text/run-qwen3-4B-8xgpu.sh
 | ---------------- | ------ | ------------------------------------------------ |
 | `--sapo-tau-pos` | `1.0`  | Positive advantage 的温度参数                    |
 | `--sapo-tau-neg` | `1.05` | Negative advantage 的温度参数（更高 = 更强抑制） |
+
+### GDPO 专用参数
+
+| 参数                     | 默认值   | 说明                                                            |
+| ------------------------ | -------- | --------------------------------------------------------------- |
+| `--gdpo-reward-keys`     | —        | **必填**，至少两个。奖励 dict 中要独立归一化的 key              |
+| `--gdpo-reward-weights`  | 全 `1.0` | 各分量权重，长度须与 keys 一致；乘在**归一化后**的 advantage 上 |
+| `--reward-key`           | —        | **必填**，选出 metrics 与 `raw_reward` 用的标量                 |
+| `--n-samples-per-prompt` | —        | 必须 ≥ 2                                                        |
+
+GDPO 与 `--normalize-advantages`、`--custom-reward-post-process-path` 互斥，参数校验阶段会报错。
 
 ## 最佳实践
 
@@ -191,6 +210,7 @@ GSPO_ARGS=(
 examples/algorithms/
 ├── README.md                              (本文件)
 ├── run-qwen35-9B-8xgpu-openr1mm-cispo-async.sh    (CISPO 多模态示例)
+├── ../gdpo/                               (GDPO 双奖励示例)
 ├── ... (其他算法脚本)
 ```
 
@@ -223,3 +243,4 @@ examples/algorithms/
 - [CISPO - MiniMax-M1](https://arxiv.org/abs/2506.13585)
 - [PPO - Proximal Policy Optimization](https://arxiv.org/abs/1707.06347)
 - [REINFORCE++ - Simple Efficient Alignment](https://arxiv.org/abs/2501.03262)
+- [GDPO - Group reward-Decoupled Normalization](https://arxiv.org/abs/2601.05242)
