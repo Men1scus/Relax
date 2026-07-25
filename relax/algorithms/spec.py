@@ -63,12 +63,31 @@ class AlgorithmSpec:
     converges and exits cleanly. Note ``--hybrid`` is *not* affected: it uses
     the colocate role set, so advantages are computed in the Megatron worker
     where the data-parallel group exists.
+
+    Do not be tempted to relax this into "allow it when the slice happens to
+    equal the batch". The slice the deployment actually receives also depends
+    on which TransferQueue sampler the controller installed
+    (``relax/core/controller.py``), and that choice is global to every
+    consumer. Under ``--balance-data`` it is ``SeqlenBalancedSampler``, whose
+    ``batch_size`` is *per data-parallel rank*; the deployment passes no
+    ``sampling_config``, so it would receive one rank's share of a
+    token-balanced split rather than the batch.
     """
 
     uses_reward_components: bool = False
     """Whether the algorithm consumes several named reward components rather
     than the single scalar ``--reward-key`` selects. Drives the
-    ``--gdpo-reward-keys`` / ``--gdpo-reward-weights`` validation."""
+    ``--gdpo-reward-keys`` / ``--gdpo-reward-weights`` validation.
+
+    Those two options stay GDPO-prefixed on purpose: every algorithm-specific
+    option in Relax names its algorithm (``--sapo-tau-pos``,
+    ``--disable-grpo-std-normalization``), and GDPO is so far the only member
+    of this category — renaming now would mean guessing the abstraction from a
+    single example. When a second ``uses_reward_components`` algorithm lands,
+    rename both to algorithm-neutral options and keep the old spellings as
+    deprecated aliases for one release, the way ``--loss-type sft_loss`` is
+    handled in ``relax/utils/arguments.py``.
+    """
 
     min_group_size: int = 1
     allows_custom_reward_post_process: bool = True
