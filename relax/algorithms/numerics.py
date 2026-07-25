@@ -11,6 +11,36 @@ from drifting apart.
 import torch
 import torch.distributed as dist
 
+from relax.utils.logging_utils import get_logger
+
+
+logger = get_logger(__name__)
+
+_LOGGED_GROUP_SIZE = False
+
+
+def _log_group_once(process_group: dist.ProcessGroup | None) -> None:
+    """Report the reduction group once per process.
+
+    Whether a batch statistic is global or per-shard is invisible in the loss
+    curve: a misconfigured run where tensor parallelism ate the extra GPUs
+    leaves the data-parallel group at size 1, the all-reduce becomes an
+    identity, and everything still trains. This line is what makes that
+    distinguishable in a log.
+    """
+    global _LOGGED_GROUP_SIZE
+    if _LOGGED_GROUP_SIZE:
+        return
+    _LOGGED_GROUP_SIZE = True
+    if process_group is None:
+        logger.info("Batch statistics are local (no process group); the caller owns the whole batch.")
+    else:
+        logger.info(
+            "Batch statistics reduce over dp_world=%d (this rank is dp_rank=%d).",
+            dist.get_world_size(process_group),
+            dist.get_rank(process_group),
+        )
+
 
 STD_EPS = 1e-6
 """Epsilon added to a standard deviation before dividing by it.
@@ -78,6 +108,8 @@ def distributed_mean_std(
     does for ``--normalize-advantages`` (see
     ``relax.utils.distributed_utils.distributed_masked_whiten``).
     """
+    _log_group_once(process_group)
+
     total = values.sum()
     total_sq = (values * values).sum()
     count = torch.tensor(float(values.numel()), dtype=values.dtype, device=values.device)

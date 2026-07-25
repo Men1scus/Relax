@@ -100,19 +100,18 @@ async def _score_all(samples):
 
 
 def _grpo_normalize(args, raw_rewards):
-    """Replicates the default GRPO group normalization in
-    relax.utils.utils.post_process_rewards."""
-    if (
-        args.advantage_estimator
-        not in [
-            "grpo",
-            "gspo",
-            "sapo",
-            "cispo",
-            "reinforce_plus_plus_baseline",
-        ]
-        or not args.rewards_normalization
-    ):
+    """Replicates the default group normalization in
+    relax.utils.utils.post_process_rewards.
+
+    Which algorithms normalize, and which of those also divide by the group
+    standard deviation, comes from the algorithm registry rather than from a
+    copy of the whitelist — a copy would silently go stale the next time an
+    algorithm is added.
+    """
+    from relax.algorithms import get_algorithm
+
+    spec = get_algorithm(args.advantage_estimator)
+    if not spec.is_group_normalized or not args.rewards_normalization:
         return raw_rewards
     rewards = torch.tensor(raw_rewards, dtype=torch.float)
     if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
@@ -121,7 +120,7 @@ def _grpo_normalize(args, raw_rewards):
         rewards = rewards.view(-1, rewards.shape[-1])
     mean = rewards.mean(dim=-1, keepdim=True)
     rewards = rewards - mean
-    if args.advantage_estimator in ["grpo", "gspo", "sapo", "cispo"] and args.grpo_std_normalization:
+    if spec.reward_normalizer == "group_mean_std" and args.grpo_std_normalization:
         std = rewards.std(dim=-1, keepdim=True)
         rewards = rewards / (std + 1e-6)
     return rewards.flatten().tolist()

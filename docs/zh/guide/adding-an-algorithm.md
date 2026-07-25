@@ -19,7 +19,21 @@ relax/algorithms/
 2. **spec 的字段存字符串标识符，不存函数引用**。advantage 计算跑在 Ray Serve 的 `Advantages` 进程，policy loss 跑在 Megatron worker 进程，两者 import 的模块子集不同。跨进程只传算法名，各进程本地查表。
 3. **`ALGOS` 角色表不用手改**。它从注册表自动派生，新算法自动获得标准 RL 角色集合。
 
-## 四步
+## 接入一个新算法要改多少
+
+先说实话：**不是「加一条 dict entry」就完事**。
+
+| 情况 | 要改的文件 |
+|---|---|
+| 复用现成的 reward 归一化 / advantage / policy loss，只是组合方式不同 | 1 个（`spec.py`） |
+| 需要一种新的数学（如新的 advantage 公式） | 2–3 个（`spec.py` + 对应的实现模块） |
+| 还需要新的命令行参数（如 GDPO 的 `--gdpo-reward-keys`） | 4–6 个（上述 + `arguments.py` 的参数声明与校验 + 示例 + 文档） |
+
+注册表消除的是「同一个算法名散落在 6 处 if/elif」，不是「新增算法零成本」。GDPO 走的是最后一档。
+
+`ALGOS` 角色表是唯一真正做到零改动的部分——它从注册表自动派生。
+
+## 步骤
 
 ### 1. 加一条 spec
 

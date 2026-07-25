@@ -31,7 +31,24 @@ Three hard constraints:
 3. **Do not hand-edit the `ALGOS` role table.** It is derived from the registry,
    so a new algorithm gets the standard RL role set automatically.
 
-## Four Steps
+## How Much Does Adding One Cost
+
+Honestly: **not "one dict entry".**
+
+| Situation | Files to touch |
+|---|---|
+| Reuses existing reward normalization / advantage / policy loss, just combined differently | 1 (`spec.py`) |
+| Needs new maths (a new advantage formula, say) | 2-3 (`spec.py` plus the implementation module) |
+| Also needs new command-line options (as GDPO needs `--gdpo-reward-keys`) | 4-6 (the above, plus the option and its validation in `arguments.py`, plus an example and docs) |
+
+What the registry removes is one algorithm name being interpreted in six
+scattered if/elif chains — not the cost of adding an algorithm. GDPO is in the
+last row.
+
+The `ALGOS` role table is the one part that genuinely costs nothing: it derives
+itself from the registry.
+
+## Steps
 
 ### 1. Add a spec entry
 
