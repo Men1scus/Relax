@@ -97,6 +97,7 @@ def test_gdpo_spec_guards():
     assert spec.allows_custom_reward_post_process is False
     assert spec.forbids_normalize_advantages is True
     assert spec.requires_rewards_normalization is True
+    assert spec.uses_reward_components is True
     assert spec.disabled_reason is None
 
 

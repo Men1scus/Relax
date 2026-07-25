@@ -103,6 +103,7 @@ def test_defaults_are_permissive():
     assert spec.allows_custom_reward_post_process is True
     assert spec.requires_rewards_normalization is False
     assert spec.forbids_normalize_advantages is False
+    assert spec.uses_reward_components is False
     assert spec.disabled_reason is None
 
 

@@ -2505,7 +2505,7 @@ def validate_algorithm_args(args) -> None:
             f"{spec.min_group_size}, got {args.n_samples_per_prompt}."
         )
 
-    if spec.reward_normalizer == "gdpo_decoupled":
+    if spec.uses_reward_components:
         _validate_multi_reward_args(args, spec)
 
 

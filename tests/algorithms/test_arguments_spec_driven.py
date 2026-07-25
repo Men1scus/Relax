@@ -94,6 +94,7 @@ def test_validation_reads_spec_fields():
         "requires_rewards_normalization",
         "allows_custom_reward_post_process",
         "min_group_size",
+        "uses_reward_components",
         "disabled_reason",
     ):
         assert field in src, f"arguments.py does not consult spec.{field}"

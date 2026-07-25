@@ -51,6 +51,11 @@ class AlgorithmSpec:
     token-level ``--normalize-advantages`` pass would whiten a second time."""
 
     requires_rewards_normalization: bool = False
+    uses_reward_components: bool = False
+    """Whether the algorithm consumes several named reward components rather
+    than the single scalar ``--reward-key`` selects. Drives the
+    ``--gdpo-reward-keys`` / ``--gdpo-reward-weights`` validation."""
+
     min_group_size: int = 1
     allows_custom_reward_post_process: bool = True
     """False when ``--custom-reward-post-process-path`` would silently disable
@@ -113,6 +118,7 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         # second, token-level pass on top of it.
         forbids_normalize_advantages=True,
         requires_rewards_normalization=True,
+        uses_reward_components=True,
         # Step 1 divides by an unbiased group std, undefined for a single sample.
         min_group_size=2,
         # The custom hook short-circuits reward post-processing, which would
