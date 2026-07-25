@@ -448,7 +448,9 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Carve a held-out eval split from --prompt-data instead of providing a separate "
                     "--eval-prompt-data. A value <1 is treated as a fraction of the train dataset "
-                    "(e.g. 0.05 → last 5%); a value ≥1 is treated as an absolute sample count. "
+                    # `%%` escapes the percent sign: argparse runs help through printf-style
+                    # expansion, so a bare `%)` raises ValueError whenever --help is formatted.
+                    "(e.g. 0.05 → last 5%%); a value ≥1 is treated as an absolute sample count. "
                     "The reserved tail is removed from the train pool so train and eval samples never "
                     "overlap. Mutually exclusive with --eval-prompt-data."
                 ),
