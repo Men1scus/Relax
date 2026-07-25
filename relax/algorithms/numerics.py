@@ -36,13 +36,24 @@ def is_collapsed(values: torch.Tensor, *, process_group: dist.ProcessGroup | Non
     has no such false positives, and near-equality is already damped by
     :data:`STD_EPS`.
     """
-    if values.numel() == 0:
-        return True
-    low, high = values.min(), values.max()
-    if process_group is not None:
-        bounds = torch.stack([-low, high])
-        dist.all_reduce(bounds, op=dist.ReduceOp.MAX, group=process_group)
-        low, high = -bounds[0], bounds[1]
+    if process_group is None:
+        if values.numel() == 0:
+            return True
+        return bool(values.min() == values.max())
+
+    # Every rank in the group has to reach the collective, including one whose
+    # shard came out empty — returning early there would hang the others. An
+    # empty shard contributes -inf to both halves, which is the identity for MAX
+    # and therefore leaves the reduction to the ranks that do have samples.
+    empty = values.numel() == 0
+    neg_infinity = torch.tensor(float("-inf"), dtype=values.dtype, device=values.device)
+    bounds = torch.stack(
+        [neg_infinity if empty else -values.min(), neg_infinity if empty else values.max()],
+    )
+    dist.all_reduce(bounds, op=dist.ReduceOp.MAX, group=process_group)
+    low, high = -bounds[0], bounds[1]
+    if not torch.isfinite(low):
+        return True  # every rank was empty
     return bool(low == high)
 
 
@@ -75,6 +86,10 @@ def distributed_mean_std(
         stats = torch.stack([count, total, total_sq])
         dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=process_group)
         count, total, total_sq = stats[0], stats[1], stats[2]
+
+    if count == 0:
+        zero = torch.zeros((), dtype=values.dtype, device=values.device)
+        return zero, zero
 
     mean = total / count
     # Bessel-corrected, matching torch.std()'s default so the single-reward GDPO
