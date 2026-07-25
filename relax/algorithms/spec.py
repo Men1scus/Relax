@@ -104,6 +104,21 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         advantage_fn="grpo_broadcast",
         policy_loss_fn="cispo",
     ),
+    "gdpo": AlgorithmSpec(
+        name="gdpo",
+        reward_normalizer="gdpo_decoupled",
+        advantage_fn="gdpo",
+        policy_loss_fn="ppo_clip",
+        # Step 3 already whitens per sequence; --normalize-advantages would add a
+        # second, token-level pass on top of it.
+        forbids_normalize_advantages=True,
+        requires_rewards_normalization=True,
+        # Step 1 divides by an unbiased group std, undefined for a single sample.
+        min_group_size=2,
+        # The custom hook short-circuits reward post-processing, which would
+        # silently skip steps 1 and 2 while the run still reports itself as GDPO.
+        allows_custom_reward_post_process=False,
+    ),
     "ppo": AlgorithmSpec(
         name="ppo",
         reward_normalizer="none",
