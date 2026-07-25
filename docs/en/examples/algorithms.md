@@ -214,7 +214,7 @@ A complete runnable example lives in [`examples/gdpo/`](https://github.com/redai
 
 Three differences between this implementation and the paper. Confirm they are acceptable before training:
 
-1. **Step 3's batch boundary.** Under colocate each data-parallel rank holds only a `global_batch_size / dp_size` shard, so step 3 all-reduces `count/sum/sumsq` across the DP group and the statistics describe the full training batch, matching the paper. Under fully-async the Advantages deployment is a single replica and needs no reduction, but it consumes one `global_batch_size / num_iters_per_train_update` slice at a time, so its statistics window is still narrower than the training batch.
+1. **Step 3's batch boundary.** Under colocate (and hybrid) each data-parallel rank holds only a `global_batch_size / dp_size` shard, so step 3 all-reduces `count/sum/sumsq` across the DP group and the statistics describe the full training batch, matching the paper. **`--fully-async` is rejected during argument validation**: it hands advantage computation to the single-replica Advantages deployment, which has no data-parallel group and consumes one `global_batch_size / num_iters_per_train_update` slice at a time — when that quotient is 1 the whitened output is identically zero and the run trains on no signal at all, quietly. Supporting it needs cohort accumulation at the training-batch boundary, which is follow-up work.
 2. **A single reward does not reduce to GRPO.** Step 3 still applies, leaving a positive scalar difference from GRPO (data-dependent, measured around 1.21). Use `--advantage-estimator grpo` if you want GRPO semantics.
 3. **$G=2$ discards magnitude.** Any two distinct values standardize to exactly $\pm 1/\sqrt{2}$, so with a group of two the only thing distinguishing components is their weights.
 
@@ -222,8 +222,9 @@ Three differences between this implementation and the paper. Confirm they are ac
 
 - `--normalize-advantages`: step 3 already whitens per sequence; adding the token-level pass on top is not meaningful.
 - `--custom-reward-post-process-path`: that hook short-circuits reward post-processing entirely, silently skipping steps 1 and 2 while the run still reports itself as GDPO.
+- `--fully-async`: see above.
 
-Both combinations fail during argument validation.
+All three fail during argument validation. Combining it with `--dynamic-sampling-filter-path` logs a warning instead: the built-in `check_reward_nonzero_std` judges a group by the single `--reward-key` scalar and may drop groups whose signal lives in the other components.
 
 ---
 

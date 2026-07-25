@@ -51,6 +51,20 @@ class AlgorithmSpec:
     token-level ``--normalize-advantages`` pass would whiten a second time."""
 
     requires_rewards_normalization: bool = False
+    supports_fully_async: bool = True
+    """Whether the algorithm is correct under ``--fully-async``.
+
+    That mode routes advantage computation to the single-replica
+    ``relax.components.advantages`` deployment, which owns no data-parallel
+    group and consumes one ``global_batch_size / num_iters_per_train_update``
+    slice at a time. An algorithm whose advantages depend on batch-level
+    statistics computes them over that slice instead of the batch, and at
+    slice size 1 gets no signal at all — silently, since the run still
+    converges and exits cleanly. Note ``--hybrid`` is *not* affected: it uses
+    the colocate role set, so advantages are computed in the Megatron worker
+    where the data-parallel group exists.
+    """
+
     uses_reward_components: bool = False
     """Whether the algorithm consumes several named reward components rather
     than the single scalar ``--reward-key`` selects. Drives the
@@ -118,6 +132,9 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         # second, token-level pass on top of it.
         forbids_normalize_advantages=True,
         requires_rewards_normalization=True,
+        # Step 3 needs the training batch. Under --fully-async it would only ever
+        # see one slice of it, and a slice of one sample yields zero advantages.
+        supports_fully_async=False,
         uses_reward_components=True,
         # Step 1 divides by an unbiased group std, undefined for a single sample.
         min_group_size=2,

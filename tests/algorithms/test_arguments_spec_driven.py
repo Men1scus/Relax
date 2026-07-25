@@ -59,6 +59,9 @@ def _args(estimator="gdpo", **overrides):
         gdpo_reward_weights=None,
         reward_key="score",
         use_critic=False,
+        fully_async=False,
+        hybrid=False,
+        dynamic_sampling_filter_path=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -328,3 +331,55 @@ def test_spec_with_an_unregistered_implementation_is_rejected_at_startup(argumen
 
     with pytest.raises(ValueError, match="typo_does_not_exist"):
         arguments_module.validate_algorithm_args(_args("grpo", gdpo_reward_keys=None, reward_key=None))
+
+
+# ---------------- fully-async is not a supported execution mode for GDPO ----------------
+
+
+def test_gdpo_is_rejected_under_fully_async(arguments_module):
+    """Otherwise it trains on one slice at a time and, at slice size 1, on
+    nothing."""
+    with pytest.raises(ValueError, match="not supported under --fully-async"):
+        arguments_module.validate_algorithm_args(_args(fully_async=True))
+
+
+def test_gdpo_is_allowed_under_hybrid(arguments_module):
+    """--hybrid sets fully_async later, but uses the colocate role set: advantages
+    are computed in the Megatron worker, where the DP group exists."""
+    arguments_module.validate_algorithm_args(_args(fully_async=True, hybrid=True))
+
+
+def test_gdpo_is_allowed_under_colocate(arguments_module):
+    arguments_module.validate_algorithm_args(_args(fully_async=False))
+
+
+@pytest.mark.parametrize("estimator", ["grpo", "gspo", "sapo", "cispo"])
+def test_other_estimators_are_unaffected_by_fully_async(arguments_module, estimator):
+    args = _args(estimator, fully_async=True, gdpo_reward_keys=None, reward_key=None)
+    arguments_module.validate_algorithm_args(args)
+
+
+def test_supports_fully_async_defaults_to_true():
+    from relax.algorithms import get_algorithm, list_algorithm_names
+
+    unsupported = {n for n in list_algorithm_names() if not get_algorithm(n).supports_fully_async}
+    assert unsupported == {"gdpo"}
+
+
+def test_dynamic_sampling_filter_warns_for_multi_reward(arguments_module, caplog):
+    """The built-in filter judges a group by the single --reward-key scalar."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        arguments_module.validate_algorithm_args(_args(dynamic_sampling_filter_path="pkg.mod.fn"))
+
+    assert any("dynamic-sampling-filter-path" in r.message for r in caplog.records)
+
+
+def test_no_warning_without_a_filter(arguments_module, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        arguments_module.validate_algorithm_args(_args())
+
+    assert not any("dynamic-sampling-filter-path" in r.message for r in caplog.records)

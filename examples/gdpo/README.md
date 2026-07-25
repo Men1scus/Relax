@@ -63,10 +63,12 @@ GDPO_ARGS=(
 
 ## 已知偏差
 
-1. **第三步的 batch 边界**。colocate 下每个 DP rank 只持有 `global_batch_size / dp_size` 的分片，第三步会跨 DP all-reduce 统计量，因此覆盖完整训练批；fully-async 下 Advantages 单副本每次只消费训练批的一个切片，统计窗口偏小。
+1. **第三步的 batch 边界**。colocate（及 hybrid）下每个 DP rank 只持有 `global_batch_size / dp_size` 的分片，第三步会跨 DP all-reduce 统计量，因此覆盖完整训练批。**`--fully-async` 会在参数校验阶段被拒绝**——那条路径的切片可能小到只有一个样本，白化输出恒为 0。
 2. **单个奖励时 GDPO 不等于 GRPO**，差一个正标量。要 GRPO 语义就用 `--advantage-estimator grpo`。
 3. **`--n-samples-per-prompt 2` 时幅度信息丢失**：任意两个不同值标准化后恒为 ±0.7071。示例用 8 就是为了避开这一点。
 
 ## 冲突项
 
-`--normalize-advantages` 和 `--custom-reward-post-process-path` 都不能与 GDPO 同用，参数校验阶段会直接报错。前者会造成双重白化；后者会整段短路奖励后处理，导致 GDPO 的前两步被静默跳过。
+`--normalize-advantages`、`--custom-reward-post-process-path` 和 `--fully-async` 都不能与 GDPO 同用，参数校验阶段会直接报错。第一个会造成双重白化；第二个会整段短路奖励后处理，导致 GDPO 的前两步被静默跳过；第三个的统计窗口可能小到只剩一个样本。
+
+配 `--dynamic-sampling-filter-path` 时只警告不报错：内置过滤器按 `--reward-key` 的单个标量判组，可能丢掉只在其它分量里有信号的组。

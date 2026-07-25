@@ -2531,6 +2531,18 @@ def validate_algorithm_args(args) -> None:
             f"The {spec.name!r} advantage estimator needs `--n-samples-per-prompt` >= "
             f"{spec.min_group_size}, got {args.n_samples_per_prompt}."
         )
+    # `--hybrid` also ends up with fully_async set, but only later in validation and
+    # only as an implementation detail: it uses the colocate role set, so advantages
+    # are computed in the Megatron worker rather than the Advantages deployment.
+    # Reading both raw flags here is what distinguishes the two.
+    if not spec.supports_fully_async and args.fully_async and not args.hybrid:
+        raise ValueError(
+            f"The {spec.name!r} advantage estimator is not supported under --fully-async. "
+            "Its advantages depend on batch-level statistics, but that mode computes them in a "
+            "single-replica service that sees one `global_batch_size / num_iters_per_train_update` "
+            "slice at a time — with a slice of one sample the advantages come out all zero and the "
+            "run trains on no signal without failing. Use --colocate or --hybrid."
+        )
 
     if spec.uses_reward_components:
         _validate_multi_reward_args(args, spec)
@@ -2560,6 +2572,20 @@ def _validate_multi_reward_args(args, spec) -> None:
         raise ValueError(
             f"The {spec.name!r} advantage estimator needs `--reward-key` to select the scalar reward "
             "used for metrics and for the raw_reward column."
+        )
+
+    if args.dynamic_sampling_filter_path:
+        # A warning rather than an error: the filter is opt-in and a custom one may
+        # well be component-aware. The built-in check_reward_nonzero_std is not — it
+        # reads the single --reward-key scalar, so a group where that component is
+        # flat but another still varies gets dropped, which is exactly the case this
+        # estimator exists to keep.
+        logger.warning(
+            "%r combines multiple reward components, but --dynamic-sampling-filter-path filters on the "
+            "single --reward-key scalar (%r). Groups carrying signal only in the other components may be "
+            "dropped before training sees them.",
+            spec.name,
+            args.reward_key,
         )
 
 

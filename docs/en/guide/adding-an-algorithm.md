@@ -78,6 +78,7 @@ Capability fields:
 | `forbids_normalize_advantages` | Reject `--normalize-advantages` (algorithm whitens itself) |
 | `requires_rewards_normalization` | Reject `--disable-rewards-normalization` |
 | `min_group_size` | Floor on `--n-samples-per-prompt` |
+| `supports_fully_async` | Set `False` to reject `--fully-async`, where advantages are computed slice-by-slice in a single-replica service with no data-parallel group |
 | `allows_custom_reward_post_process` | Set `False` to block a custom hook that would silently skip your normalization |
 | `disabled_reason` | Keep the name but refuse to run, with an explanation |
 

@@ -61,6 +61,7 @@ relax/algorithms/
 | `forbids_normalize_advantages` | 禁止 `--normalize-advantages`（算法自带白化时） |
 | `requires_rewards_normalization` | 禁止 `--disable-rewards-normalization` |
 | `min_group_size` | `--n-samples-per-prompt` 的下限 |
+| `supports_fully_async` | 设为 `False` 可拒绝 `--fully-async`（该模式下 advantage 由单副本服务按切片计算，无 DP 通信域） |
 | `allows_custom_reward_post_process` | 设为 `False` 可拦住会静默跳过本算法归一化的自定义钩子 |
 | `disabled_reason` | 保留算法名但拒绝运行，附带说明 |
 

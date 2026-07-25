@@ -214,7 +214,7 @@ GDPO_ARGS=(
 
 以下三点是实现与论文之间的实际差异，训练前请确认可以接受：
 
-1. **第三步的 batch 边界**。colocate 模式下，每个数据并行 rank 只持有 `global_batch_size / dp_size` 的分片，因此第三步会对 `count/sum/sumsq` 做一次跨 DP 的 all-reduce，统计量覆盖完整训练批，与论文一致。fully-async 模式下 Advantages 是单副本，无需归约，但它每次消费的是 `global_batch_size / num_iters_per_train_update` 的切片——统计窗口小于完整训练批，这一层偏差仍然存在。
+1. **第三步的 batch 边界**。colocate（及 hybrid）模式下，每个数据并行 rank 只持有 `global_batch_size / dp_size` 的分片，因此第三步会对 `count/sum/sumsq` 做一次跨 DP 的 all-reduce，统计量覆盖完整训练批，与论文一致。**`--fully-async` 不受支持，参数校验阶段会直接拒绝**：那条路径把 advantage 计算交给单副本的 Advantages 服务，它没有数据并行通信域，且每次只消费 `global_batch_size / num_iters_per_train_update` 的一个切片；当这个商为 1 时白化输出恒为 0，训练会安静地在零信号上跑完。要支持它需要按训练批边界做 cohort 累积，属于后续工作。
 2. **单个奖励时 GDPO 不退化为 GRPO**。第三步仍然生效，结果与 GRPO 相差一个正标量（与数据相关，实测约 1.21）。要 GRPO 语义就直接用 `--advantage-estimator grpo`。
 3. **$G=2$ 时幅度信息丢失**。任意两个不同值经无偏标准化后恒为 $\pm 1/\sqrt{2}$，此时分量之间的区分度只来自权重。
 
@@ -222,8 +222,9 @@ GDPO_ARGS=(
 
 - 不能与 `--normalize-advantages` 同用：第三步已经做过序列级白化，再叠加 token 级白化没有意义。
 - 不能与 `--custom-reward-post-process-path` 同用：该钩子会整段短路奖励后处理，导致第一、二步被静默跳过，而训练日志仍然显示算法是 GDPO。
+- 不能与 `--fully-async` 同用（见上）。
 
-两者都会在参数校验阶段直接报错。
+三者都会在参数校验阶段直接报错。配合 `--dynamic-sampling-filter-path` 时会给出警告：内置的 `check_reward_nonzero_std` 只看 `--reward-key` 那一个标量，可能丢掉只存在于其它分量的信号。
 
 ---
 

@@ -143,3 +143,120 @@ def test_only_gdpo_was_added():
 def test_reward_normalizer_identifiers_all_resolve():
     for name in list_algorithm_names():
         assert get_algorithm(name).reward_normalizer in REWARD_NORMALIZERS
+
+
+# ---------------- the adapters must be identity wrappers ----------------
+#
+# The co_names checks above only prove the kernel's name appears in the adapter's
+# bytecode. They would still pass if the adapter scaled its input, dropped an
+# argument, or threw the result away. These compare the adapter's output against
+# calling the kernel directly with main's argument list, which is what actually
+# pins "the wrapper adds nothing".
+
+
+def _kl(lengths=(3, 2)):
+    return [torch.zeros(n, dtype=torch.float32) for n in lengths]
+
+
+def _masks(lengths=(3, 2)):
+    return [torch.ones(n, dtype=torch.float32) for n in lengths]
+
+
+def _args(estimator, **overrides):
+    from types import SimpleNamespace
+
+    base = dict(
+        advantage_estimator=estimator,
+        kl_coef=0.0,
+        gamma=1.0,
+        lambd=1.0,
+        eps_clip=0.2,
+        eps_clip_high=0.3,
+        sapo_tau_pos=1.0,
+        sapo_tau_neg=1.05,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize("name", ["grpo", "gspo", "sapo", "cispo"])
+def test_grpo_family_adapter_is_the_bare_kernel(name):
+    """main: torch.tensor(rewards, float32, device) then get_grpo_returns(...)."""
+    from relax.algorithms.advantages import compute_advantages_and_returns
+
+    rewards, kl = [1.5, -2.0], _kl()
+    got, _ = compute_advantages_and_returns(_args(name), rewards=rewards, kl=kl, loss_masks=_masks())
+    want = ppo_utils.get_grpo_returns(torch.tensor(rewards, dtype=torch.float32, device=kl[0].device), kl)
+
+    assert len(got) == len(want)
+    for left, right in zip(got, want, strict=True):
+        assert torch.equal(left, right), name
+
+
+def test_reinforce_plus_plus_baseline_adapter_is_the_bare_kernel():
+    from relax.algorithms.advantages import compute_advantages_and_returns
+
+    rewards, kl, masks = [3.0], [torch.tensor([2.0, 4.0])], [torch.ones(2)]
+    args = _args("reinforce_plus_plus_baseline", kl_coef=0.5)
+
+    got, returns = compute_advantages_and_returns(args, rewards=rewards, kl=kl, loss_masks=masks)
+    want = ppo_utils.get_reinforce_plus_plus_baseline_advantages(
+        rewards=torch.tensor(rewards, dtype=torch.float32, device=kl[0].device),
+        kl=[torch.tensor([2.0, 4.0])],
+        loss_masks=masks,
+        kl_coef=0.5,
+    )
+
+    for left, right in zip(got, want, strict=True):
+        assert torch.equal(left, right)
+    assert returns is got, "main aliased returns to advantages for this estimator"
+
+
+def _loss_inputs():
+    torch.manual_seed(20260726)
+    return torch.randn(8), torch.randn(8), torch.randn(8)
+
+
+def test_ppo_clip_adapter_passes_mains_arguments():
+    from relax.algorithms.policy import compute_policy_loss_for
+
+    log_probs, ppo_kl, advantages = _loss_inputs()
+    args = _args("grpo")
+    got = compute_policy_loss_for(args, log_probs=log_probs, ppo_kl=ppo_kl, advantages=advantages)
+    want = ppo_utils.compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
+    assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1])
+
+
+def test_sapo_adapter_passes_mains_arguments():
+    from relax.algorithms.policy import compute_policy_loss_for
+
+    log_probs, ppo_kl, advantages = _loss_inputs()
+    args = _args("sapo", sapo_tau_pos=1.3, sapo_tau_neg=1.7)
+    got = compute_policy_loss_for(args, log_probs=log_probs, ppo_kl=ppo_kl, advantages=advantages)
+    want = ppo_utils.compute_sapo_loss(ppo_kl=ppo_kl, advantages=advantages, tau_pos=1.3, tau_neg=1.7)
+    assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1])
+
+
+def test_sapo_adapter_uses_mains_defaults_when_args_omit_the_taus():
+    from types import SimpleNamespace
+
+    from relax.algorithms.policy import compute_policy_loss_for
+
+    log_probs, ppo_kl, advantages = _loss_inputs()
+    bare = SimpleNamespace(advantage_estimator="sapo", eps_clip=0.2, eps_clip_high=0.3)
+    got = compute_policy_loss_for(bare, log_probs=log_probs, ppo_kl=ppo_kl, advantages=advantages)
+    want = ppo_utils.compute_sapo_loss(ppo_kl=ppo_kl, advantages=advantages, tau_pos=1.0, tau_neg=1.05)
+    assert torch.equal(got[0], want[0])
+
+
+def test_cispo_adapter_passes_mains_arguments():
+    """The one adapter taking four kernel arguments — most room to drop one."""
+    from relax.algorithms.policy import compute_policy_loss_for
+
+    log_probs, ppo_kl, advantages = _loss_inputs()
+    args = _args("cispo", eps_clip=0.15, eps_clip_high=9.0)
+    got = compute_policy_loss_for(args, log_probs=log_probs, ppo_kl=ppo_kl, advantages=advantages)
+    want = ppo_utils.compute_cispo_loss(
+        log_probs=log_probs, ppo_kl=ppo_kl, advantages=advantages, eps_clip=0.15, eps_clip_high=9.0
+    )
+    assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1])
