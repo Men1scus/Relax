@@ -11,6 +11,7 @@ except ImportError:
             return self.value
 
 
+from relax.algorithms import list_algorithm_names
 from relax.components.actor import Actor
 from relax.components.actor_fwd import ActorFwd
 from relax.components.advantages import Advantages
@@ -56,39 +57,31 @@ class ROLES_FULLY_ASYNC_ON_POLICY(StrEnum):
     reference: str = "reference"
 
 
-ALGOS = {
-    "grpo": {
+def _standard_rl_roles() -> dict:
+    """Role topology shared by every RL algorithm.
+
+    Which services to start is orthogonal to the advantage formula, so all
+    registered RL algorithms get the same set.  Deriving this from the registry
+    rather than listing algorithms by hand is what keeps estimators such as
+    ``reinforce_plus_plus`` — implemented everywhere else but previously absent
+    here — from failing at service-registration time.
+    """
+    return {
         ROLES.rollout: Rollout,
         ROLES.actor: Actor,
         ROLES.advantages: Advantages,
         ROLES.reference: ActorFwd,
         ROLES.actor_fwd: ActorFwd,
-    },
-    "gspo": {
-        ROLES.rollout: Rollout,
-        ROLES.actor: Actor,
-        ROLES.advantages: Advantages,
-        ROLES.reference: ActorFwd,
-        ROLES.actor_fwd: ActorFwd,
-    },
-    "sapo": {
-        ROLES.rollout: Rollout,
-        ROLES.actor: Actor,
-        ROLES.advantages: Advantages,
-        ROLES.reference: ActorFwd,
-        ROLES.actor_fwd: ActorFwd,
-    },
-    "cispo": {
-        ROLES.rollout: Rollout,
-        ROLES.actor: Actor,
-        ROLES.advantages: Advantages,
-        ROLES.reference: ActorFwd,
-        ROLES.actor_fwd: ActorFwd,
-    },
-    "sft": {
-        ROLES.sft: SFT,
-        ROLES.actor: Actor,
-    },
+    }
+
+
+# NOTE(dev): `ALGOS` keys live in a different namespace from AlgorithmSpec names.
+# "sft" is selected by `loss_type`, not by `--advantage-estimator`, so it stays a
+# separate literal entry rather than being folded into the algorithm registry.
+ALGOS = {name: _standard_rl_roles() for name in list_algorithm_names()}
+ALGOS["sft"] = {
+    ROLES.sft: SFT,
+    ROLES.actor: Actor,
 }
 
 

@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 from sglang_router.launch_router import RouterArgs
 
+from relax.algorithms import get_algorithm, list_algorithm_names
 from relax.backends.sglang.arguments import sglang_parse_args
 from relax.backends.sglang.arguments import validate_args as sglang_validate_args
 from relax.utils import device as device_utils
@@ -1458,18 +1459,11 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--advantage-estimator",
                 type=str,
-                choices=[
-                    "grpo",
-                    "gspo",
-                    "reinforce_plus_plus",
-                    "reinforce_plus_plus_baseline",
-                    "ppo",
-                    "sapo",
-                    "cispo",
-                ],
+                choices=list_algorithm_names(),
                 default="grpo",
                 help=(
-                    "Advantage estimator to use. Note: on-policy distillation (OPD) is now orthogonal "
+                    "Advantage estimator to use. The choices come from the algorithm registry in "
+                    "relax/algorithms/spec.py. Note: on-policy distillation (OPD) is orthogonal "
                     "to the advantage estimator. Use --opd-kl-coef > 0 to enable OPD on top of any estimator."
                 ),
             )
@@ -1484,6 +1478,28 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=1.05,
                 help="Temperature for negative advantages in SAPO (default: 1.05)",
+            )
+            parser.add_argument(
+                "--gdpo-reward-keys",
+                type=str,
+                nargs="+",
+                default=None,
+                help=(
+                    "Names of the reward components GDPO standardizes independently, e.g. "
+                    "`--gdpo-reward-keys correctness format`. The reward function must return a dict "
+                    "containing every key. At least two keys are required."
+                ),
+            )
+            parser.add_argument(
+                "--gdpo-reward-weights",
+                type=float,
+                nargs="+",
+                default=None,
+                help=(
+                    "Per-component weights for GDPO, matching --gdpo-reward-keys in length. "
+                    "Defaults to 1.0 each. The weights multiply the *normalized* advantages, "
+                    "not the raw rewards, so they express relative importance rather than units."
+                ),
             )
             parser.add_argument(
                 "--disable-compute-advantages-and-returns",
@@ -2445,6 +2461,81 @@ def _validate_agentic_rollout_args(args) -> None:
         raise ValueError("--agentic-eval-prepare-pool-size must be > 0.")
 
 
+def validate_algorithm_args(args) -> None:
+    """Apply the constraints the algorithm registry declares for this run.
+
+    These rules used to be `if args.advantage_estimator == "..."` checks
+    scattered across this file, which meant a new algorithm could silently miss
+    one. They now come from AlgorithmSpec fields, so declaring the algorithm is
+    enough. Also sets ``args.use_critic``, the only role switch derived from
+    the algorithm.
+    """
+    spec = get_algorithm(args.advantage_estimator)
+
+    if spec.disabled_reason:
+        raise ValueError(spec.disabled_reason)
+
+    args.use_critic = spec.needs_critic
+
+    if spec.requires_normalize_advantages and not args.normalize_advantages:
+        raise ValueError(
+            f"The {spec.name!r} advantage estimator requires advantage normalization. "
+            "Please add `--normalize-advantages` to your command."
+        )
+    if spec.forbids_normalize_advantages and args.normalize_advantages:
+        raise ValueError(
+            f"The {spec.name!r} advantage estimator already whitens advantages per sequence; "
+            "`--normalize-advantages` would apply a second, token-level whitening on top. "
+            "Please remove it."
+        )
+    if spec.requires_rewards_normalization and not args.rewards_normalization:
+        raise ValueError(
+            f"The {spec.name!r} advantage estimator needs reward normalization. "
+            "Please remove `--disable-rewards-normalization`."
+        )
+    if not spec.allows_custom_reward_post_process and args.custom_reward_post_process_path is not None:
+        raise ValueError(
+            "`--custom-reward-post-process-path` short-circuits reward post-processing, which would "
+            f"silently skip {spec.name!r}'s reward normalization while the run still reports itself as "
+            f"{spec.name!r}. Please drop one of the two."
+        )
+    if args.n_samples_per_prompt < spec.min_group_size:
+        raise ValueError(
+            f"The {spec.name!r} advantage estimator needs `--n-samples-per-prompt` >= "
+            f"{spec.min_group_size}, got {args.n_samples_per_prompt}."
+        )
+
+    if spec.reward_normalizer == "gdpo_decoupled":
+        _validate_multi_reward_args(args, spec)
+
+
+def _validate_multi_reward_args(args, spec) -> None:
+    """Check the reward-component configuration for multi-reward algorithms."""
+    keys = args.gdpo_reward_keys or []
+    if len(keys) < 2:
+        raise ValueError(
+            f"The {spec.name!r} advantage estimator needs at least two reward keys; "
+            f"pass e.g. `--gdpo-reward-keys correctness format`. Got {keys}."
+        )
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicates:
+        raise ValueError(f"`--gdpo-reward-keys` contains duplicates: {duplicates}.")
+
+    weights = args.gdpo_reward_weights
+    if weights is not None and len(weights) != len(keys):
+        raise ValueError(
+            f"`--gdpo-reward-weights` has {len(weights)} entries but `--gdpo-reward-keys` has {len(keys)}."
+        )
+
+    # Components arrive as a dict; without --reward-key the raw_reward column
+    # would hold dicts, which the TransferQueue conversion cannot represent.
+    if not args.reward_key:
+        raise ValueError(
+            f"The {spec.name!r} advantage estimator needs `--reward-key` to select the scalar reward "
+            "used for metrics and for the raw_reward column."
+        )
+
+
 def slime_validate_args(args):
     # Backward compatibility: old scripts may pass --enable-gloo-process-groups
     if not hasattr(args, "use_gloo_process_groups"):
@@ -2593,11 +2684,7 @@ def slime_validate_args(args):
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
     if not is_sft:
-        if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
-            assert args.normalize_advantages, (
-                "The 'reinforce_plus_plus' and 'reinforce_plus_plus_baseline' advantage estimators "
-                "require advantage normalization. Please add `--normalize-advantages` to your command."
-            )
+        validate_algorithm_args(args)
 
         if args.fully_async:
             assert not args.normalize_advantages, (
@@ -2738,7 +2825,9 @@ def slime_validate_args(args):
             logger.info("--loss-type sft: auto-enabling --balance-data for DP-balanced batching.")
             args.balance_data = True
 
-    args.use_critic = args.advantage_estimator == "ppo"
+    # `use_critic` is set by validate_algorithm_args for RL runs; SFT never has one.
+    if is_sft:
+        args.use_critic = False
     if args.critic_num_gpus_per_node is None:
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
     if args.critic_num_nodes is None:
@@ -2998,13 +3087,6 @@ def slime_validate_args(args):
         )
     if args.only_train_params_name_list and args.freeze_params_name_list:
         raise ValueError("You can only specify ONE of: --only-train-params-name-list, or --freeze-params-name-list.")
-
-    if args.advantage_estimator == "ppo":
-        raise ValueError(
-            "PPO (Proximal Policy Optimization) is no longer supported in Relax. "
-            "Please use one of the following advantage estimators instead: "
-            "'grpo', 'gspo', 'sapo', 'cispo', 'reinforce_plus_plus', or 'reinforce_plus_plus_baseline'."
-        )
 
     if args.rotate_ckpt:
         assert args.save is not None, "--save must be set when --rotate-ckpt is set."
