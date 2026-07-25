@@ -16,7 +16,10 @@ from typing import Any, Callable
 import torch
 
 from relax.algorithms.numerics import STD_EPS, collapse_mask
+from relax.utils.logging_utils import get_logger
 
+
+logger = get_logger(__name__)
 
 GROUP_EPS = STD_EPS
 
@@ -149,6 +152,7 @@ def normalize_gdpo_decoupled(args: Any, samples: list[Any], raw_rewards: list[fl
     positions_by_group = group_positions(samples, args.n_samples_per_prompt)
 
     normalized = torch.zeros_like(components)
+    fully_collapsed_groups = 0
     for positions in positions_by_group.values():
         group = components[positions]
         centered = group - group.mean(dim=0, keepdim=True)
@@ -156,6 +160,22 @@ def normalize_gdpo_decoupled(args: Any, samples: list[Any], raw_rewards: list[fl
         collapsed = collapse_mask(group, std, dim=0)
         scaled = centered / (std + GROUP_EPS)
         normalized[positions] = torch.where(collapsed.unsqueeze(0), torch.zeros_like(scaled), scaled)
+        if bool(collapsed.all()):
+            fully_collapsed_groups += 1
+
+    if fully_collapsed_groups == len(positions_by_group):
+        # Every component collapsed in every group, so this batch produces no
+        # gradient at all. Usually the reward function is constant for these
+        # prompts (e.g. a format reward when nothing in the prompt asks for a
+        # format). Worth one line, because the symptom downstream is simply
+        # "loss does not move".
+        logger.warning(
+            "GDPO: all reward components collapsed in all %d groups of this batch (keys=%s); "
+            "the batch contributes no gradient. Check that each of these rewards actually varies "
+            "across rollouts of the same prompt.",
+            fully_collapsed_groups,
+            keys,
+        )
 
     weight_tensor = torch.tensor(weights, dtype=torch.float32)
     return (normalized * weight_tensor).sum(dim=1).tolist()

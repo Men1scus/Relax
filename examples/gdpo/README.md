@@ -25,6 +25,21 @@ export EXP_DIR=/path/to/experiments
 bash examples/gdpo/run-qwen3-0.6B-1xgpu-gdpo.sh
 ```
 
+### 数据要求
+
+每条 prompt 需要**自带**格式要求，否则基座模型不会产出 `<think>`/`<answer>` 标签，`format` 分量会恒为 0（组内塌缩），GDPO 就退化成只看 `correctness`。准备数据时给 question 追加一句即可：
+
+```python
+instruction = (
+    "\n\nThink step by step inside <think> </think> tags, then give only the "
+    "final number inside <answer> </answer> tags."
+)
+df["question"] = df["question"] + instruction
+```
+
+**不要用 `--system-prompt` 代替**：`relax/utils/data/data_utils.py:181` 把 system message 的 content 构造成多模态 list（`content: [{"type": "text", ...}]`），Qwen3-0.6B 这类纯文本 chat template 渲染时会报
+`TypeError: can only concatenate str (not "list") to str`。这是既有的框架限制，与 GDPO 无关。
+
 ## 参数说明
 
 ```bash

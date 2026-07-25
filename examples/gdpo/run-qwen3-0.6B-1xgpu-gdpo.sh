@@ -40,14 +40,18 @@ CKPT_ARGS=(
    --megatron-to-hf-mode bridge
 )
 
-SYSTEM_PROMPT="A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>"
-
+# NOTE: the format instruction belongs in the prompt text, not in
+# --system-prompt. relax/utils/data/data_utils.py:181 builds the system message
+# with multimodal list content (`content: [{"type": "text", ...}]`), which a
+# text-only chat template such as Qwen3-0.6B's cannot render:
+#   TypeError: can only concatenate str (not "list") to str
+# Prepare the dataset so each question already asks for the <think>/<answer>
+# tags; see examples/gdpo/README.md.
 ROLLOUT_ARGS=(
    --prompt-data ${DATA_DIR}/gsm8k/train.jsonl
    --input-key question
    --label-key answer
    --apply-chat-template
-   --system-prompt "${SYSTEM_PROMPT}"
    --num-rollout ${NUM_ROLLOUT}
    --rollout-batch-size 4
    --n-samples-per-prompt 8

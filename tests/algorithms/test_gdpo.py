@@ -375,3 +375,39 @@ def test_sample_get_reward_components_matches_the_test_double():
     scalar = Sample(group_index=0, reward=1.0)
     with pytest.raises(ValueError, match="must be a dict"):
         scalar.get_reward_components(["correctness"])
+
+
+def test_warns_once_when_every_component_collapses_in_every_group(caplog):
+    """A batch that produces no gradient at all must not be silent."""
+    import logging
+
+    samples = _mk([0, 0, 0, 0], [1.0] * 4, [0.5] * 4)
+    with caplog.at_level(logging.WARNING):
+        out = _normalize(_args(), samples)
+
+    assert out == [0.0] * 4
+    assert sum("all reward components collapsed" in r.message for r in caplog.records) == 1
+
+
+def test_does_not_warn_when_some_signal_survives(caplog):
+    import logging
+
+    samples = _mk([0, 0, 0, 0], [1.0] * 4, [1.0, 0.0, 1.0, 0.0])
+    with caplog.at_level(logging.WARNING):
+        _normalize(_args(), samples)
+
+    assert not any("all reward components collapsed" in r.message for r in caplog.records)
+
+
+def test_does_not_warn_when_only_some_groups_collapse(caplog):
+    import logging
+
+    samples = _mk(
+        [0, 0, 0, 0, 1, 1, 1, 1],
+        [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0],
+        [0.5, 0.5, 0.5, 0.5, 1.0, 0.0, 1.0, 0.0],
+    )
+    with caplog.at_level(logging.WARNING):
+        _normalize(_args(), samples)
+
+    assert not any("all reward components collapsed" in r.message for r in caplog.records)
