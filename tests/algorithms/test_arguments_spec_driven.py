@@ -234,3 +234,97 @@ def test_non_gdpo_algorithms_ignore_reward_key_and_component_options(arguments_m
 def test_unknown_estimator_raises_from_the_registry(arguments_module):
     with pytest.raises(KeyError, match="Unknown advantage estimator"):
         arguments_module.validate_algorithm_args(_args("not_an_algorithm"))
+
+
+# ---------------- --custom-config-path override timing ----------------
+
+
+def _write_yaml(tmp_path, body):
+    path = tmp_path / "override.yaml"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+def _overridable_args(tmp_path, body, **overrides):
+    """Args as they look when the YAML merge runs: already validated once."""
+    base = _args("grpo", gdpo_reward_keys=None, reward_key=None)
+    base.loss_type = "policy_loss"
+    base.custom_config_path = _write_yaml(tmp_path, body)
+    for key, value in overrides.items():
+        setattr(base, key, value)
+    return base
+
+
+def test_yaml_cannot_smuggle_in_a_disabled_estimator(arguments_module, tmp_path):
+    """main rejected `advantage_estimator: ppo` from YAML; so must we."""
+    args = _overridable_args(tmp_path, "advantage_estimator: ppo\n")
+
+    with pytest.raises(ValueError, match="no longer supported"):
+        arguments_module.apply_custom_config_overrides(args)
+
+
+def test_yaml_cannot_bypass_gdpo_requirements(arguments_module, tmp_path):
+    """Switching to GDPO from YAML must still demand its reward keys."""
+    args = _overridable_args(tmp_path, "advantage_estimator: gdpo\n")
+
+    with pytest.raises(ValueError, match="at least two reward keys"):
+        arguments_module.apply_custom_config_overrides(args)
+
+
+def test_yaml_cannot_enable_conflicting_whitening_under_gdpo(arguments_module, tmp_path):
+    """The dangerous case: silent double whitening rather than a crash."""
+    args = _overridable_args(
+        tmp_path,
+        "normalize_advantages: true\n",
+        advantage_estimator="gdpo",
+        gdpo_reward_keys=["correctness", "format"],
+        reward_key="score",
+        n_samples_per_prompt=8,
+    )
+
+    with pytest.raises(ValueError, match="normalize-advantages"):
+        arguments_module.apply_custom_config_overrides(args)
+
+
+def test_yaml_without_algorithm_changes_is_accepted(arguments_module, tmp_path):
+    args = _overridable_args(tmp_path, "lr: 0.5\n")
+    arguments_module.apply_custom_config_overrides(args)
+    assert args.lr == 0.5
+    assert args.advantage_estimator == "grpo"
+
+
+def test_no_yaml_is_a_no_op(arguments_module):
+    args = _args("grpo", gdpo_reward_keys=None, reward_key=None)
+    args.loss_type = "policy_loss"
+    args.custom_config_path = None
+    arguments_module.apply_custom_config_overrides(args)
+
+
+def test_sft_runs_skip_the_algorithm_recheck(arguments_module, tmp_path):
+    """SFT never selects an estimator, so a stale one must not block it."""
+    args = _overridable_args(tmp_path, "lr: 0.5\n", loss_type="sft", advantage_estimator="ppo")
+    arguments_module.apply_custom_config_overrides(args)
+    assert args.lr == 0.5
+
+
+def test_slime_validate_args_applies_overrides_through_the_helper(arguments_module):
+    """Guard the call site: the merge must go through the re-checking
+    helper."""
+    import inspect
+
+    src = inspect.getsource(arguments_module.slime_validate_args)
+    assert "apply_custom_config_overrides(args)" in src
+    assert "yaml.safe_load" not in src, "the YAML merge was inlined again, skipping the re-check"
+
+
+def test_spec_with_an_unregistered_implementation_is_rejected_at_startup(arguments_module, monkeypatch):
+    """A registry typo must name itself, not KeyError inside a worker."""
+    from dataclasses import replace
+
+    from relax.algorithms.spec import ALGORITHM_SPECS
+
+    broken = replace(ALGORITHM_SPECS["grpo"], advantage_fn="typo_does_not_exist")
+    monkeypatch.setitem(ALGORITHM_SPECS, "grpo", broken)
+
+    with pytest.raises(ValueError, match="typo_does_not_exist"):
+        arguments_module.validate_algorithm_args(_args("grpo", gdpo_reward_keys=None, reward_key=None))

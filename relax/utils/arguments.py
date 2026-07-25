@@ -2461,6 +2461,28 @@ def _validate_agentic_rollout_args(args) -> None:
         raise ValueError("--agentic-eval-prepare-pool-size must be > 0.")
 
 
+def _assert_spec_implementations_resolve(spec) -> None:
+    """Check that every implementation the spec names is actually registered.
+
+    Imports the implementation tables lazily: they pull in torch, and this
+    module is imported for `--help`.
+    """
+    from relax.algorithms.advantages import ADVANTAGE_FNS
+    from relax.algorithms.policy import POLICY_LOSS_FNS
+    from relax.algorithms.rewards import REWARD_NORMALIZERS
+
+    for field, key, table in (
+        ("reward_normalizer", spec.reward_normalizer, REWARD_NORMALIZERS),
+        ("advantage_fn", spec.advantage_fn, ADVANTAGE_FNS),
+        ("policy_loss_fn", spec.policy_loss_fn, POLICY_LOSS_FNS),
+    ):
+        if key not in table:
+            raise ValueError(
+                f"Algorithm {spec.name!r} declares {field}={key!r}, which is not registered. "
+                f"Available: {sorted(table)}."
+            )
+
+
 def validate_algorithm_args(args) -> None:
     """Apply the constraints the algorithm registry declares for this run.
 
@@ -2474,6 +2496,11 @@ def validate_algorithm_args(args) -> None:
 
     if spec.disabled_reason:
         raise ValueError(spec.disabled_reason)
+
+    # The spec references its implementations by name, so a typo in the registry
+    # would otherwise surface as a KeyError deep inside a worker on the first
+    # batch. Resolve them here, while the error can still name the culprit.
+    _assert_spec_implementations_resolve(spec)
 
     args.use_critic = spec.needs_critic
 
@@ -2533,6 +2560,42 @@ def _validate_multi_reward_args(args, spec) -> None:
         raise ValueError(
             f"The {spec.name!r} advantage estimator needs `--reward-key` to select the scalar reward "
             "used for metrics and for the raw_reward column."
+        )
+
+
+def apply_custom_config_overrides(args) -> None:
+    """Merge ``--custom-config-path`` YAML into ``args`` and re-check the
+    result.
+
+    The merge happens late in validation so that a YAML file can override
+    derived values, which means every algorithm check that already ran was made
+    against a config we may no longer be training with. Re-running them here is
+    what stops a YAML file from quietly selecting a disabled estimator or
+    switching on a flag the algorithm forbids.
+    """
+    if not args.custom_config_path:
+        return
+
+    use_critic_before_override = getattr(args, "use_critic", False)
+    with open(args.custom_config_path) as f:
+        data = yaml.safe_load(f) or {}
+    for k, v in data.items():
+        if hasattr(args, k):
+            logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
+        setattr(args, k, v)
+
+    if args.loss_type in ("sft", "sft_loss", "sft-loss"):
+        return
+
+    validate_algorithm_args(args)
+    if args.use_critic != use_critic_before_override:
+        # Role composition and the offload flags were derived from the pre-override
+        # value earlier in validation, so accepting the new one here would leave the
+        # run half-configured rather than either fully critic or fully critic-free.
+        raise ValueError(
+            f"--custom-config-path changed the algorithm to {args.advantage_estimator!r}, which needs a different "
+            f"critic setup than the one already derived. Pass --advantage-estimator on the command line instead "
+            f"of overriding it from YAML."
         )
 
 
@@ -3056,13 +3119,7 @@ def slime_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
-    if args.custom_config_path:
-        with open(args.custom_config_path) as f:
-            data = yaml.safe_load(f) or {}
-        for k, v in data.items():
-            if hasattr(args, k):
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
-            setattr(args, k, v)
+    apply_custom_config_overrides(args)
 
     if args.eval_max_context_len is None:
         logger.info(

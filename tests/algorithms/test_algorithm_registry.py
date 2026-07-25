@@ -15,6 +15,7 @@ EXPECTED_NAMES = [
     "gspo",
     "sapo",
     "cispo",
+    "gdpo",
     "ppo",
     "reinforce_plus_plus",
     "reinforce_plus_plus_baseline",
@@ -62,9 +63,11 @@ def test_reward_normalizer_ids_match_current_behavior():
 
 
 def test_is_group_normalized_matches_the_legacy_whitelist():
+    """The pre-registry whitelist, plus GDPO which also normalizes per
+    group."""
     legacy = {"grpo", "gspo", "sapo", "cispo", "reinforce_plus_plus_baseline"}
     actual = {n for n in EXPECTED_NAMES if get_algorithm(n).is_group_normalized}
-    assert actual == legacy
+    assert actual == legacy | {"gdpo"}
 
 
 def test_gspo_is_the_only_sequence_level_kl():
@@ -124,3 +127,17 @@ def test_spec_module_has_no_heavy_imports():
         "from relax.backends",
     ):
         assert banned not in src, f"spec.py must not import {banned}"
+
+
+def test_every_spec_identifier_resolves_to_a_registered_implementation():
+    """A typo in the registry must not wait until the first batch to
+    surface."""
+    from relax.algorithms.advantages import ADVANTAGE_FNS
+    from relax.algorithms.policy import POLICY_LOSS_FNS
+    from relax.algorithms.rewards import REWARD_NORMALIZERS
+
+    for name in list_algorithm_names():
+        spec = get_algorithm(name)
+        assert spec.reward_normalizer in REWARD_NORMALIZERS, name
+        assert spec.advantage_fn in ADVANTAGE_FNS, name
+        assert spec.policy_loss_fn in POLICY_LOSS_FNS, name
