@@ -2483,6 +2483,54 @@ def _assert_spec_implementations_resolve(spec) -> None:
             )
 
 
+def _warn_if_batch_statistics_span_several_steps(args) -> None:
+    """Say so when an algorithm's batch statistic will not describe one batch.
+
+    GDPO's third step normalises over whatever the caller hands it, and the
+    Megatron caller merges ``rollout_batch_size * n_samples_per_prompt /
+    global_batch_size`` training batches before calling. When that quotient is
+    not 1 the statistic spans several optimizer steps, which is wider than the
+    paper's Eq. 6. That is documented, but documentation is not a warning: a user
+    who changes one of these three numbers gets the wider behaviour with nothing
+    in the log to say so.
+
+    Driven by the spec field, not by an algorithm name, so a second algorithm
+    that whitens per batch inherits it.
+    """
+    from relax.algorithms import get_algorithm
+
+    estimator = getattr(args, "advantage_estimator", None)
+    if estimator is None:
+        return
+    spec = get_algorithm(estimator)
+    if spec.advantage_fn != "gdpo":
+        return
+
+    rollout_batch = getattr(args, "rollout_batch_size", None)
+    samples = getattr(args, "n_samples_per_prompt", None)
+    global_batch = getattr(args, "global_batch_size", None)
+    if not rollout_batch or not samples or not global_batch:
+        return
+
+    total = rollout_batch * samples
+    if total % global_batch or total // global_batch == 1:
+        return
+
+    logger.warning(
+        "%r normalises its combined advantage over %d training batches at once: "
+        "rollout_batch_size (%d) * n_samples_per_prompt (%d) / global_batch_size (%d) = %d. "
+        "The paper normalises over one. Set global_batch_size == rollout_batch_size * "
+        "n_samples_per_prompt to match it; see the known deviations in "
+        "docs/*/examples/algorithms.md.",
+        spec.name,
+        total // global_batch,
+        rollout_batch,
+        samples,
+        global_batch,
+        total // global_batch,
+    )
+
+
 def validate_algorithm_args(args) -> None:
     """Apply the constraints the algorithm registry declares for this run.
 
@@ -3069,6 +3117,11 @@ def slime_validate_args(args):
                 f"// num_steps_per_rollout {args.num_steps_per_rollout}"
             )
         args.global_batch_size = global_batch_size
+
+    # Deliberately here and not in validate_algorithm_args: rollout_batch_size and
+    # global_batch_size are only settled by the block above, so reading them any
+    # earlier would warn on numbers that are about to change.
+    _warn_if_batch_statistics_span_several_steps(args)
 
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False

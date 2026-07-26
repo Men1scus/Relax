@@ -272,7 +272,7 @@ Recomputation parameters use native Megatron parameters. For details, refer to M
 
 | Parameter | Type | Default | Options | Description |
 |-----------|------|---------|---------|-------------|
-| `--advantage-estimator` | str | grpo | `grpo`, `gspo`, `on_policy_distillation`, `sapo` | Advantage estimator. Note: OPD is now independent of advantage estimator; enable OPD on any estimator with `--opd-kl-coef > 0` |
+| `--advantage-estimator` | str | grpo | see `relax/algorithms/spec.py` | Advantage estimator. The accepted values come from `ALGORITHM_SPECS`, so `--help` is authoritative and this table cannot fall behind it — it had been listing `on_policy_distillation`, which is no longer an estimator, while missing four that are. Note: OPD is independent of the estimator; enable it on any of them with `--opd-kl-coef > 0` |
 | `--normalize-advantages` | flag | False | - | Whether to normalize advantages |
 | `--disable-grpo-std-normalization` | flag | - | - | Disable GRPO standard deviation normalization (from [Dr.GRPO](https://arxiv.org/pdf/2503.20783)) |
 | `--disable-rewards-normalization` | flag | - | - | Disable reward normalization |

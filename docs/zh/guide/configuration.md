@@ -272,7 +272,7 @@
 
 | 参数 | 类型 | 默认值 | 可选值 | 说明 |
 |------|------|--------|--------|------|
-| `--advantage-estimator` | str | grpo | `grpo`, `gspo`, `on_policy_distillation`, `sapo` | 优势估计器。注意：OPD 现在独立于优势估计器，使用 `--opd-kl-coef > 0` 在任何估计器上启用 OPD |
+| `--advantage-estimator` | str | grpo | 见 `relax/algorithms/spec.py` | 优势估计器。取值由 `ALGORITHM_SPECS` 生成，因此以 `--help` 为准，这张表不会再落后于它——它此前还列着已不是 estimator 的 `on_policy_distillation`，同时漏了四个真实存在的。注意：OPD 独立于优势估计器，用 `--opd-kl-coef > 0` 在任何估计器上启用 |
 | `--normalize-advantages` | flag | False | - | 是否归一化优势 |
 | `--disable-grpo-std-normalization` | flag | - | - | 禁用 GRPO 标准差归一化（来自 [Dr.GRPO](https://arxiv.org/pdf/2503.20783)） |
 | `--disable-rewards-normalization` | flag | - | - | 禁用 reward 归一化 |
