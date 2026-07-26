@@ -82,8 +82,11 @@ Capability fields:
 | `allows_custom_reward_post_process` | Set `False` to block a custom hook that would silently skip your normalization |
 | `disabled_reason` | Keep the name but refuse to run, with an explanation |
 
-`validate_algorithm_args` in `relax/utils/arguments.py` consumes all of these,
-so declaring a field is enough — you do not add an `if` there.
+`validate_algorithm_args` in `relax/utils/arguments.py` consumes every field in
+that table except `kl_level` and `needs_full_log_probs`, so for the rest,
+declaring the field is enough — you do not add an `if` there. Those two are read
+in `relax/backends/megatron/loss.py` instead: a genuinely new `kl_level` value
+needs a branch there, an existing one does not.
 
 ### 2. Write pure functions for genuinely new maths
 

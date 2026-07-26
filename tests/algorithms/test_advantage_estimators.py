@@ -179,7 +179,12 @@ def test_two_values_differing_by_one_ulp_are_not_collapsed():
     base = torch.tensor(1.0)
     values = torch.stack([base, torch.nextafter(base, torch.tensor(2.0))] * 2)
     out = whiten_scalar(values)
-    # eps damps it to near-zero rather than amplifying, but it is not forced to 0
+    # The name's claim is the > 0: is_collapsed tests exact equality, so a
+    # one-ULP spread is real signal and must survive. An earlier version of this
+    # test asserted only the upper bound, which an all-zero output also passes --
+    # i.e. it did not test the thing it was named after.
+    assert out.abs().max() > 0.0
+    # eps damps it towards zero rather than amplifying it to unit scale.
     assert out.abs().max() < 1.0
 
 

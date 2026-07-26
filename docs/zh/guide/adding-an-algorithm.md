@@ -65,7 +65,7 @@ relax/algorithms/
 | `allows_custom_reward_post_process` | 设为 `False` 可拦住会静默跳过本算法归一化的自定义钩子 |
 | `disabled_reason` | 保留算法名但拒绝运行，附带说明 |
 
-这些字段由 `relax/utils/arguments.py` 的 `validate_algorithm_args` 统一消费，所以**声明即生效**，不需要再去 `arguments.py` 加 `if`。
+表里除 `kl_level` 和 `needs_full_log_probs` 之外的字段，都由 `relax/utils/arguments.py` 的 `validate_algorithm_args` 统一消费，**声明即生效**，不需要再去 `arguments.py` 加 `if`。那两个字段是在 `relax/backends/megatron/loss.py` 里读的：新增一个前所未有的 `kl_level` 取值需要在那里加分支，复用已有取值则不用。
 
 ### 2. 需要新公式时，写纯函数并登记
 

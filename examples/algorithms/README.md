@@ -223,7 +223,9 @@ examples/algorithms/
 - **GRPO**：all-round，快速尝试的首选
 - **CISPO**：需要精细学习信号时更好，但需要 KL 约束
 - **GSPO**：长序列任务，训练更稳定
-- **PPO**：如果已有 Critic 资源，性能可能更好
+- **GDPO**：多个奖励分量各自需要归一化时用它
+
+（PPO 已不再支持：`--advantage-estimator ppo` 会在参数校验阶段直接报错，见 `relax/algorithms/spec.py` 的 `disabled_reason`。）
 
 ### Q: CISPO 的梯度波动很大，正常吗？
 

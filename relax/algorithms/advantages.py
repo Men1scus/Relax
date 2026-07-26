@@ -42,8 +42,10 @@ def whiten_scalar(values: torch.Tensor, *, process_group: dist.ProcessGroup | No
     ``num_rollout_minis * global_batch_size / dp_size`` samples — its shard of
     the whole rollout, merged before ``compute_advantages_and_returns`` runs — so
     whitening locally would give every rank its own mean and scale, not the "one
-    global scale factor" the maths assumes.  Callers that already hold
-    everything (the single-replica Ray Serve deployment) pass ``None``.
+    global scale factor" the maths assumes.  ``None`` means "I own every value you
+    need"; note the single-replica ``Advantages`` deployment cannot be that caller
+    for GDPO, since ``supports_fully_async=False`` rejects the configuration that
+    would route here — so in practice ``None`` is the CPU-side and test callers.
 
     Note what this does *not* give you: because the caller merges the rollout
     before calling, the statistic spans ``num_rollout_minis`` optimizer steps

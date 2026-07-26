@@ -175,7 +175,13 @@ def test_group_mean_std_respects_the_dr_grpo_switch():
 
 
 def test_grouping_is_driven_by_group_index_not_position():
-    """Reordering samples must permute the output, not change the values."""
+    """Group membership follows ``group_index``, not batch position.
+
+    Interleaving the same rewards into different groups therefore changes the
+    group statistics and so the normalized values -- which is what the
+    assertion below checks. (An earlier version of this docstring claimed the
+    opposite.)
+    """
     args = _args("grpo", n=4)
     raw = [0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 13.0]
 
