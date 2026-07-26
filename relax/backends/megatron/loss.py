@@ -511,10 +511,13 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     `args.advantage_estimator`.
 
     This function extracts rewards, log-probs, values, and masks from
-    `rollout_data`, computes KL divergences, then applies the chosen advantage
-    estimator. Supported methods: "grpo", "gspo", "sapo", "cispo", "ppo", "reinforce_plus_plus",
-    and "reinforce_plus_plus_baseline". When `args.normalize_advantages` is
-    True, advantages are whitened across the data-parallel group using masked
+    `rollout_data`, computes KL divergences, then dispatches to the estimator
+    named by `relax.algorithms.spec.ALGORITHM_SPECS[...].advantage_fn`. The
+    supported methods are whatever that registry holds -- deliberately not
+    listed here, because the list this replaced had already gone stale (it never
+    gained "gdpo") and keeping algorithm names in prose is the duplication the
+    registry exists to remove. When `args.normalize_advantages` is True,
+    advantages are whitened across the data-parallel group using masked
     statistics.
 
     Early returns if both `log_probs` and `values` are None (intermediate
