@@ -183,6 +183,8 @@ $$\hat{A}^{(i,j)} = \frac{A_\text{sum}^{(i,j)} - \mathrm{mean}_\text{batch}}{\ma
 
 **Why this beats GRPO:** when one component is constant across a group (reward collapse), GRPO's summed reward collapses too, the whole group's advantages go to zero, and the samples are wasted. Under GDPO only *that component* contributes zero while the others still carry signal.
 
+**On $\epsilon$:** GDPO uses $\epsilon = 10^{-4}$ at both steps, matching the reference implementation (the `scale_rewards` GDPO branch of TRL's `GRPOTrainer`), whereas GRPO / GSPO / SAPO / CISPO keep this repository's existing $10^{-6}$. The two only diverge on near-degenerate groups: with binary rewards and a group of 8 the within-group standard deviation is around 0.4 and the constants differ by 0.02%, but a continuous reward (the paper's maths setup scores response length) can leave a group at a standard deviation of ~$10^{-3}$, where $10^{-4}$ damps that group's signal by about 7% against 0.08% for $10^{-6}$. Groups that collapse *exactly* never reach this division; they are detected by exact equality and zeroed.
+
 ### Key Parameters
 
 | Parameter | Default | Description |
