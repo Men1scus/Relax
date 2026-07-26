@@ -31,6 +31,23 @@ def _extract_answer(response: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _final_answer(label: Any) -> str:
+    """Normalise a GSM8K label to just the final answer.
+
+    GSM8K ships ``answer`` as the full worked solution ending in ``#### 36``, so
+    comparing a model's ``<answer>36</answer>`` against the whole string makes
+    ``correctness`` zero for every rollout. That collapses the component in every
+    group, and GDPO silently degrades to the single ``format`` reward -- which is
+    the one thing this example exists to demonstrate it does not do.
+
+    Handling it here rather than only in a data-prep step keeps the example
+    working against the dataset it names. Labels without the marker pass through
+    unchanged, so a pre-cleaned dataset behaves identically.
+    """
+    text = str(label).strip()
+    return text.rsplit("####", 1)[-1].strip() if "####" in text else text
+
+
 def compute_gdpo_reward(response: str, label: Any) -> dict[str, float]:
     """Score one response on answer correctness and on output format.
 
@@ -39,7 +56,7 @@ def compute_gdpo_reward(response: str, label: Any) -> dict[str, float]:
     situation GDPO handles better than a summed reward.
     """
     answer = _extract_answer(response)
-    correctness = 1.0 if answer is not None and answer == str(label).strip() else 0.0
+    correctness = 1.0 if answer is not None and answer == _final_answer(label) else 0.0
 
     has_think = _THINK_RE.search(response) is not None
     format_score = 0.5 * float(has_think) + 0.5 * float(answer is not None)

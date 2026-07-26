@@ -106,9 +106,14 @@ class AlgorithmSpec:
 
 _PPO_DISABLED = (
     "PPO (Proximal Policy Optimization) is no longer supported in Relax. "
-    "Please use one of the following advantage estimators instead: "
-    "'grpo', 'gspo', 'sapo', 'cispo', 'reinforce_plus_plus', or 'reinforce_plus_plus_baseline'."
+    "Please use one of the following advantage estimators instead: {alternatives}."
 )
+"""Formatted lazily by :func:`get_algorithm`.
+
+The alternatives used to be spelled out here, which made this the last
+hand-maintained algorithm-name list in the repository -- and it was already one
+algorithm behind, having never gained ``gdpo``. Filling it from the registry is
+the same reason the registry exists."""
 
 
 # NOTE(dev): explicit dict literal, deliberately not decorator-based registration.
@@ -184,6 +189,11 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         requires_normalize_advantages=True,
     ),
 }
+
+
+def runnable_algorithm_names() -> list[str]:
+    """Registered algorithms a user can actually select right now."""
+    return [name for name, spec in ALGORITHM_SPECS.items() if spec.disabled_reason is None]
 
 
 def get_algorithm(name: str) -> AlgorithmSpec:

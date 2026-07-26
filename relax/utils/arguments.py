@@ -2495,7 +2495,11 @@ def validate_algorithm_args(args) -> None:
     spec = get_algorithm(args.advantage_estimator)
 
     if spec.disabled_reason:
-        raise ValueError(spec.disabled_reason)
+        # The message names the alternatives, and they come from the registry so
+        # the list cannot fall behind it the way a hand-written one did.
+        from relax.algorithms.spec import runnable_algorithm_names
+
+        raise ValueError(spec.disabled_reason.format(alternatives=", ".join(runnable_algorithm_names())))
 
     # The spec references its implementations by name, so a typo in the registry
     # would otherwise surface as a KeyError deep inside a worker on the first

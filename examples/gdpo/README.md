@@ -63,7 +63,7 @@ GDPO_ARGS=(
 
 ## 已知偏差
 
-1. **第三步的 batch 边界**。colocate（及 hybrid）下每个 DP rank 只持有 `global_batch_size / dp_size` 的分片，第三步会跨 DP all-reduce 统计量，因此覆盖完整训练批。**`--fully-async` 会在参数校验阶段被拒绝**——那条路径的切片可能小到只有一个样本，白化输出恒为 0。
+1. **第三步的 batch 边界**。第三步白化的是调用方交给它的那一批，而调用方会先把 `rollout_batch_size × n_samples_per_prompt / global_batch_size` 个训练批合并起来再调用。本脚本把 `4 × 8` 和 `--global-batch-size 32` 设成相等，**这个商就是 1**，于是第三步恰好覆盖一个训练批（论文 Eq. 6 的边界）。改动其中一个而不改另一个，示例就会静默地跨多个 optimizer step 做归一化——`docs/*/examples/algorithms.md` 的已知偏差一节写了通用情形。跨 DP 的 all-reduce 保证统计量覆盖全部 rank。**`--fully-async` 会在参数校验阶段被拒绝**——那条路径的切片可能小到只有一个样本，白化输出恒为 0。
 2. **单个奖励时 GDPO 不等于 GRPO**，差一个正标量。要 GRPO 语义就用 `--advantage-estimator grpo`。
 3. **`--n-samples-per-prompt 2` 时幅度信息丢失**：任意两个不同值标准化后恒为 ±0.7071。示例用 8 就是为了避开这一点。
 

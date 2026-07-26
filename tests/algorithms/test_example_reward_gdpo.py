@@ -128,3 +128,44 @@ def test_launch_script_does_not_enable_the_conflicting_whitening():
     src = SCRIPT_PATH.read_text(encoding="utf-8")
     assert "--normalize-advantages" not in src
     assert "--custom-reward-post-process-path" not in src
+
+
+# ---------------- the label form the launch script actually feeds ----------------
+#
+# The script points --prompt-data at gsm8k/train.jsonl with --label-key answer,
+# and GSM8K's `answer` is the whole worked solution ending in "#### 36". Every
+# test above used a pre-cleaned "42", so nothing here noticed that comparing
+# against the raw string makes correctness zero for every rollout -- collapsing
+# the component in every group and quietly reducing the example to its single
+# format reward.
+
+RAW_GSM8K_LABEL = "Janet sells 16 - 3 - 4 = 9 duck eggs.\n9 * $2 = $18\n#### 18"
+
+
+def test_correct_answer_scores_against_a_raw_gsm8k_label(reward_module):
+    out = reward_module.compute_gdpo_reward("<think>work</think><answer>18</answer>", RAW_GSM8K_LABEL)
+    assert out["correctness"] == 1.0, "raw GSM8K labels must not zero out correctness"
+    assert out["format"] == 1.0
+
+
+def test_a_precleaned_label_behaves_identically(reward_module):
+    raw = reward_module.compute_gdpo_reward("<think>work</think><answer>18</answer>", RAW_GSM8K_LABEL)
+    clean = reward_module.compute_gdpo_reward("<think>work</think><answer>18</answer>", "18")
+    assert raw == clean, "normalising the label must not change a dataset that is already clean"
+
+
+def test_a_wrong_answer_is_still_wrong_against_a_raw_label(reward_module):
+    """Otherwise the normalisation could be making everything match."""
+    out = reward_module.compute_gdpo_reward("<think>work</think><answer>99</answer>", RAW_GSM8K_LABEL)
+    assert out["correctness"] == 0.0
+    assert out["format"] == 1.0, "format is independent of correctness; that is the point of the example"
+
+
+def test_the_two_components_can_disagree_on_a_raw_label(reward_module):
+    """The case GDPO exists for, on the data the script actually loads."""
+    correct_unformatted = reward_module.compute_gdpo_reward("18", RAW_GSM8K_LABEL)
+    wrong_formatted = reward_module.compute_gdpo_reward("<think>w</think><answer>99</answer>", RAW_GSM8K_LABEL)
+
+    assert correct_unformatted["format"] < wrong_formatted["format"]
+    assert correct_unformatted["correctness"] == 0.0  # no <answer> tag, so unparseable
+    assert wrong_formatted["correctness"] == 0.0

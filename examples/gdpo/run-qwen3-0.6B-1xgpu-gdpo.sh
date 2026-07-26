@@ -57,7 +57,13 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    --rollout-max-response-len 1024
    --rollout-temperature 1.0
-   --global-batch-size 16
+   # 4 * 8 == 32, deliberately: GDPO's step 3 whitens whatever the caller hands
+   # it, and the caller merges `rollout_batch_size * n_samples_per_prompt /
+   # global_batch_size` training batches before calling. Setting these equal
+   # makes that quotient 1, so step 3 covers exactly one training batch -- the
+   # boundary Eq. 6 specifies. Change one of them without the other and the
+   # example silently starts normalizing across several optimizer steps.
+   --global-batch-size 32
 )
 
 # The two reward components come from examples/gdpo/reward_gdpo.py.
