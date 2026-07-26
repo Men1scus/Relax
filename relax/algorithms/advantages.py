@@ -38,10 +38,17 @@ def whiten_scalar(values: torch.Tensor, *, process_group: dist.ProcessGroup | No
     responses dominate the statistics, which Eq. 6 does not do.
 
     ``process_group`` must be supplied wherever the caller holds only a shard of
-    the batch.  Each data-parallel rank owns ``global_batch_size / dp_size``
-    samples, so whitening locally would give every rank its own mean and scale —
-    not the "one global scale factor" the maths assumes.  Callers that already
-    hold the whole batch (the single-replica Ray Serve deployment) pass ``None``.
+    the values.  In the Megatron path each data-parallel rank owns
+    ``num_rollout_minis * global_batch_size / dp_size`` samples — its shard of
+    the whole rollout, merged before ``compute_advantages_and_returns`` runs — so
+    whitening locally would give every rank its own mean and scale, not the "one
+    global scale factor" the maths assumes.  Callers that already hold
+    everything (the single-replica Ray Serve deployment) pass ``None``.
+
+    Note what this does *not* give you: because the caller merges the rollout
+    before calling, the statistic spans ``num_rollout_minis`` optimizer steps
+    rather than one training batch.  Eq. 6 is per batch, so the two coincide only
+    when ``rollout_batch_size * n_samples_per_prompt == global_batch_size``.
 
     A batch where every value is identical returns exact zeros; see
     :func:`relax.algorithms.numerics.is_collapsed`.

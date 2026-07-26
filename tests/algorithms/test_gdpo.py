@@ -541,3 +541,35 @@ def test_batch_std_matches_torch_std_on_ordinary_input():
         mean, std = distributed_mean_std(values)
         torch.testing.assert_close(mean, values.mean(), rtol=1e-6, atol=0)
         torch.testing.assert_close(std, values.std(), rtol=1e-6, atol=0)
+
+
+# ---------------- what step 3's boundary actually is ----------------
+
+
+def test_whitening_scope_is_whatever_the_caller_passes_not_a_training_batch():
+    """Step 3 has no notion of a batch boundary; it whitens its argument.
+
+    This is worth pinning because the surrounding docs used to claim the
+    statistics describe one training batch "matching the paper", and they do not.
+    The Megatron caller merges `num_rollout_minis` windows before calling
+    (actor.py: concat_rollout_batches, under the comment "we may need normalize
+    the whole rollout"), so with the shipped example's 4 * 8 against a
+    global_batch_size of 16 one whitening spans two optimizer steps.
+
+    Concretely: whitening two batches together is not the same as whitening each.
+    """
+    from relax.algorithms.advantages import whiten_scalar
+
+    first = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    second = torch.tensor([101.0, 102.0, 103.0, 104.0])
+
+    merged = whiten_scalar(torch.cat([first, second]))
+    separate = torch.cat([whiten_scalar(first), whiten_scalar(second)])
+
+    assert not torch.allclose(merged, separate, atol=1e-3), (
+        "if these agreed, the scope of step 3 would not matter and this test would be pointless"
+    )
+    # The merged form is dominated by the between-batch offset, which is exactly
+    # the deviation from Eq. 6 the docs now describe.
+    assert merged[:4].max() < 0, "merged whitening puts the whole first batch below the mean"
+    assert torch.allclose(separate[:4], separate[4:], atol=1e-5), "per-batch whitening treats them alike"

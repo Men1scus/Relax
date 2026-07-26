@@ -570,9 +570,13 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         response_lengths=response_lengths,
         total_lengths=total_lengths,
         values=values,
-        # rollout_data holds this rank's global_batch_size/dp_size shard, so any
-        # batch-level statistic has to be reduced over the DP group to describe
-        # the batch rather than the shard.
+        # rollout_data is this rank's shard of the WHOLE rollout, not of one
+        # training batch: actor.py collects `num_rollout_minis` windows of
+        # global_batch_size/dp_size and concat_rollout_batches merges them before
+        # this call ("we may need normalize the whole rollout", actor.py). So the
+        # reduction below makes the statistic describe the rollout across the DP
+        # group -- which spans every optimizer step in it, not one batch. See the
+        # known-deviation note in docs/*/examples/algorithms.md.
         process_group=mpu.get_data_parallel_group(),
     )
 

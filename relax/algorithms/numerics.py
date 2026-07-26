@@ -126,8 +126,10 @@ def distributed_mean_std(
     Two passes, in float64.  The one-pass form ``E[x^2] - E[x]^2`` subtracts two
     nearly equal large numbers when the values sit far from zero, and the result
     is dominated by rounding: for ``[1000.0, 1000.01, 1000.02, 1000.03]`` it
-    returns a variance of exactly 0 (true std 1.29e-2), and for the same spread
-    around 1e4 it returns std 4.6 instead of 1.3e-3 — off by a factor of 3660.
+    returns a variance of exactly 0 (true std 1.29e-2), and for the tighter
+    ``[10000.0, 10000.001, 10000.002, 10000.003]`` it returns std 4.6 instead of
+    1.3e-3 — off by a factor of 3660.  Scaling the first example up to 1e4
+    without tightening it just reproduces the zero, not the inflation.
     Neither is loud.  The first silently zeroes every advantage in the batch;
     the second silently rescales them.  Reward magnitudes like these are
     ordinary: the GDPO paper's own maths setup uses a length reward, and token

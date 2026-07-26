@@ -216,7 +216,9 @@ GDPO_ARGS=(
 
 以下三点是实现与论文之间的实际差异，训练前请确认可以接受：
 
-1. **第三步的 batch 边界**。colocate（及 hybrid）模式下，每个数据并行 rank 只持有 `global_batch_size / dp_size` 的分片，因此第三步会对 `count/sum/sumsq` 做一次跨 DP 的 all-reduce，统计量覆盖完整训练批，与论文一致。**`--fully-async` 不受支持，参数校验阶段会直接拒绝**：那条路径把 advantage 计算交给单副本的 Advantages 服务，它没有数据并行通信域，且每次只消费 `global_batch_size / num_iters_per_train_update` 的一个切片；当这个商为 1 时白化输出恒为 0，训练会安静地在零信号上跑完。要支持它需要按训练批边界做 cohort 累积，属于后续工作。
+1. **第三步的 batch 边界比论文更宽**。论文的 Eq. 6 在**一个训练批**上做归一化；本实现是在**整个 rollout** 上做的。原因在框架侧：`actor.py` 会先收满 `num_rollout_minis` 个 `global_batch_size / dp_size` 窗口、用 `concat_rollout_batches` 合并，之后才调 `compute_advantages_and_returns`（上游注释原文：*we may need normalize the whole rollout*），再由 `data.py` 把合并结果拆回各个 optimizer step。跨 DP 的 `count/sum/sumsq` all-reduce 保证统计量覆盖**全部** rank，但它覆盖的范围是 rollout 而非单个训练批。
+
+   两者只在 `rollout_batch_size × n_samples_per_prompt == global_batch_size` 时一致。`examples/gdpo/run-qwen3-0.6B-1xgpu-gdpo.sh` 用的是 `4 × 8` 对 `16`，所以 `num_rollout_minis = 2` —— 一次白化跨了 2 个 optimizer step。要严格对齐论文，需要让白化感知 mini 边界（`ROLLOUT_MINI_LOCAL_SAMPLE_COUNTS_KEY` 已经带了这个信息），那会改动所有算法共用的 advantage 路径，属于后续工作。**`--fully-async` 不受支持，参数校验阶段会直接拒绝**：那条路径把 advantage 计算交给单副本的 Advantages 服务，它没有数据并行通信域，且每次只消费 `global_batch_size / num_iters_per_train_update` 的一个切片；当这个商为 1 时白化输出恒为 0，训练会安静地在零信号上跑完。要支持它需要按训练批边界做 cohort 累积，属于后续工作。
 2. **单个奖励时 GDPO 不退化为 GRPO**。第三步仍然生效，结果与 GRPO 相差一个正标量（与数据相关，实测约 1.21）。要 GRPO 语义就直接用 `--advantage-estimator grpo`。
 3. **$G=2$ 时幅度信息丢失**。任意两个不同值经无偏标准化后恒为 $\pm 1/\sqrt{2}$，此时分量之间的区分度只来自权重。
 
