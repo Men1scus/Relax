@@ -260,3 +260,114 @@ def test_cispo_adapter_passes_mains_arguments():
         log_probs=log_probs, ppo_kl=ppo_kl, advantages=advantages, eps_clip=0.15, eps_clip_high=9.0
     )
     assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1])
+
+
+@pytest.fixture
+def cp_disabled(monkeypatch):
+    """Minimal megatron.core.mpu so the reinforce++ kernel runs on CPU.
+
+    get_reinforce_plus_plus_returns imports mpu inside the function and reads
+    only get_context_parallel_world_size(); at 1 it takes the non-gathering
+    branch, which is the configuration the rest of this file already assumes.
+    Stubbing it is what makes the adapter testable at all -- the alternative is
+    leaving the one selectable estimator with no numerical check, which is how
+    it got here.
+    """
+    import sys
+    import types
+
+    core = types.ModuleType("megatron.core")
+    core.mpu = types.SimpleNamespace(
+        get_context_parallel_world_size=lambda: 1,
+        get_context_parallel_rank=lambda: 0,
+    )
+    megatron = types.ModuleType("megatron")
+    megatron.core = core
+    monkeypatch.setitem(sys.modules, "megatron", megatron)
+    monkeypatch.setitem(sys.modules, "megatron.core", core)
+    yield
+
+
+def test_reinforce_plus_plus_adapter_is_the_bare_kernel(cp_disabled):
+    """The one live estimator whose adapter had only a co_names check.
+
+    Coverage said it plainly: advantage_reinforce_plus_plus was never executed
+    by any test, so nothing would have caught the adapter dropping an argument
+    or reordering the keyword-only ones -- and unlike gae, this estimator is
+    selectable (no disabled_reason).
+    """
+    from relax.algorithms.advantages import compute_advantages_and_returns
+
+    rewards = [1.5, -2.0]
+    kl = [torch.tensor([0.1, 0.2, 0.3]), torch.tensor([0.4, 0.5])]
+    loss_masks = [torch.ones(3), torch.ones(2)]
+    response_lengths, total_lengths = [3, 2], [5, 4]
+    args = _args("reinforce_plus_plus", kl_coef=0.3, gamma=0.95)
+
+    got, returns = compute_advantages_and_returns(
+        args,
+        rewards=rewards,
+        kl=kl,
+        loss_masks=loss_masks,
+        response_lengths=response_lengths,
+        total_lengths=total_lengths,
+    )
+    want = ppo_utils.get_reinforce_plus_plus_returns(
+        rewards=torch.tensor(rewards, dtype=torch.float32, device=kl[0].device),
+        kl=kl,
+        loss_masks=loss_masks,
+        response_lengths=response_lengths,
+        total_lengths=total_lengths,
+        kl_coef=0.3,
+        gamma=0.95,
+    )
+
+    assert len(got) == len(want)
+    for left, right in zip(got, want, strict=True):
+        assert torch.equal(left, right)
+    assert returns is not got, "main copied the list before returning it"
+
+
+def test_reinforce_plus_plus_adapter_forwards_gamma_and_kl_coef(cp_disabled):
+    """Both are read off args rather than passed through, so a swap or a
+    hardcoded default would survive the identity test above if it used the
+    kernel's defaults."""
+    from relax.algorithms.advantages import compute_advantages_and_returns
+
+    inputs = dict(
+        rewards=[1.0, 1.0],
+        kl=[torch.tensor([0.5, 0.5]), torch.tensor([0.5])],
+        loss_masks=[torch.ones(2), torch.ones(1)],
+        response_lengths=[2, 1],
+        total_lengths=[3, 2],
+    )
+    low, _ = compute_advantages_and_returns(_args("reinforce_plus_plus", kl_coef=0.0, gamma=1.0), **inputs)
+    high, _ = compute_advantages_and_returns(_args("reinforce_plus_plus", kl_coef=0.9, gamma=1.0), **inputs)
+    assert not torch.equal(low[0], high[0]), "kl_coef is not reaching the kernel"
+
+    g_one, _ = compute_advantages_and_returns(_args("reinforce_plus_plus", kl_coef=0.0, gamma=1.0), **inputs)
+    g_half, _ = compute_advantages_and_returns(_args("reinforce_plus_plus", kl_coef=0.0, gamma=0.5), **inputs)
+    assert not torch.equal(g_one[0], g_half[0]), "gamma is not reaching the kernel"
+
+
+def test_loss_py_actually_forwards_the_mini_batch_boundaries():
+    """Source-level, because loss.py needs megatron to import.
+
+    The per-batch whitening tests all call advantage_gdpo directly, so removing
+    the wiring in loss.py left every one of them green while GDPO silently went
+    back to whitening the merged rollout. This is the assertion that fails when
+    that happens.
+    """
+    import pathlib
+    import re
+
+    src = (pathlib.Path(__file__).resolve().parents[2] / "relax" / "backends" / "megatron" / "loss.py").read_text(
+        encoding="utf-8"
+    )
+
+    call = re.search(r"compute_advantages_and_returns_impl\((.*?)\n    \)", src, re.DOTALL)
+    assert call, "compute_advantages_and_returns_impl call not found"
+    assert "mini_batch_sizes=rollout_data.get(ROLLOUT_MINI_LOCAL_SAMPLE_COUNTS_KEY)" in call.group(1), (
+        "loss.py must pass the per-training-batch counts; without them GDPO's step 3 "
+        "normalises over the whole merged rollout again"
+    )

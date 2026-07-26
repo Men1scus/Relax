@@ -169,3 +169,47 @@ def test_the_two_components_can_disagree_on_a_raw_label(reward_module):
     assert correct_unformatted["format"] < wrong_formatted["format"]
     assert correct_unformatted["correctness"] == 0.0  # no <answer> tag, so unparseable
     assert wrong_formatted["correctness"] == 0.0
+
+
+# ---------------- the docs must not contradict the script ----------------
+#
+# Three times in this branch a claim was fixed in one file and left stale in a
+# sibling: the batch geometry, the "covers a full training batch" wording, and
+# the algorithm-name lists. Prose cannot be diffed against code, so this checks
+# the one number the prose actually depends on.
+
+
+def _script_flag(name):
+    import pathlib
+    import re
+
+    script = (
+        pathlib.Path(__file__).resolve().parents[2] / "examples" / "gdpo" / "run-qwen3-0.6B-1xgpu-gdpo.sh"
+    ).read_text(encoding="utf-8")
+    match = re.search(rf"--{name}\s+(\d+)", script)
+    assert match, f"--{name} not found in the launch script"
+    return int(match.group(1))
+
+
+def test_example_geometry_satisfies_the_paper_boundary():
+    """rollout_batch_size * n_samples_per_prompt == global_batch_size."""
+    product = _script_flag("rollout-batch-size") * _script_flag("n-samples-per-prompt")
+    assert product == _script_flag("global-batch-size"), (
+        f"the example must whiten exactly one training batch; got {product} samples per rollout "
+        f"against a global batch of {_script_flag('global-batch-size')}"
+    )
+
+
+@pytest.mark.parametrize("doc", ["docs/zh/examples/algorithms.md", "docs/en/examples/algorithms.md"])
+def test_docs_do_not_describe_the_example_as_violating_the_boundary(doc):
+    """The known-deviation section used to cite the example as the
+    counterexample.
+
+    It stopped being one when global_batch_size moved to 32, and the text was
+    left behind. Anything asserting num_rollout_minis is 2 for this example is
+    now false.
+    """
+    import pathlib
+
+    text = (pathlib.Path(__file__).resolve().parents[2] / doc).read_text(encoding="utf-8")
+    assert "num_rollout_minis = 2" not in text, f"{doc} still calls the shipped example a counterexample"

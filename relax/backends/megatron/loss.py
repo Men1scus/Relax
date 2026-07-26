@@ -12,6 +12,7 @@ from torch.utils.checkpoint import checkpoint
 from relax.algorithms import get_algorithm
 from relax.algorithms.advantages import compute_advantages_and_returns as compute_advantages_and_returns_impl
 from relax.algorithms.policy import compute_policy_loss_for
+from relax.backends.megatron.data import ROLLOUT_MINI_LOCAL_SAMPLE_COUNTS_KEY
 from relax.utils.distributed_utils import distributed_masked_whiten
 from relax.utils.misc import load_function
 from relax.utils.opd.opd_utils import (
@@ -581,6 +582,11 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         # group -- which spans every optimizer step in it, not one batch. See the
         # known-deviation note in docs/*/examples/algorithms.md.
         process_group=mpu.get_data_parallel_group(),
+        # Per-training-batch counts, written by actor.py before it merges the
+        # rollout. Passing them is what lets a batch-level statistic describe one
+        # batch instead of the whole merged rollout; estimators that do not have
+        # one absorb this in **_unused.
+        mini_batch_sizes=rollout_data.get(ROLLOUT_MINI_LOCAL_SAMPLE_COUNTS_KEY),
     )
 
     # Optional pure OPD mode: remove all non-OPD reward contribution.

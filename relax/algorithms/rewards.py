@@ -110,6 +110,11 @@ def resolve_gdpo_weights(args: Any, keys: list[str]) -> list[float]:
         # as a collapse, and the batch silently produces zero advantages.
         if not math.isfinite(weight):
             raise ValueError(f"--gdpo-reward-weights for {key!r} is {weight}, which is not finite.")
+    if all(weight == 0.0 for weight in resolved):
+        # Every component gets multiplied by zero, so the combined advantage is
+        # identically zero: the run trains on no signal and still exits cleanly.
+        # The same shape of failure as the non-finite case above, one line later.
+        raise ValueError(f"--gdpo-reward-weights are all zero ({resolved}); the combined advantage would be 0.")
     return resolved
 
 

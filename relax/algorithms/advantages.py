@@ -77,7 +77,35 @@ def advantage_grpo_broadcast(args: Any, *, rewards, kl, **_unused):
     return advantages, returns
 
 
-def advantage_gdpo(args: Any, *, rewards, kl, process_group=None, **_unused):
+def _whiten_by_segment(values, mini_batch_sizes, process_group):
+    """Whiten each training batch separately, in the order they were merged.
+
+    Every rank runs the same number of segments -- ``num_rollout_minis`` comes
+    from the minibatch plan rather than from the data -- so the per-segment
+    collectives stay matched across the data-parallel group.
+    """
+    if mini_batch_sizes is None:
+        return whiten_scalar(values, process_group=process_group)
+    # Validate whatever was passed, including a single segment: treating an empty
+    # or malformed list as "fall back to one window" would silently restore the
+    # merged behaviour this function exists to replace.
+    if not mini_batch_sizes or any(not isinstance(n, int) or n <= 0 for n in mini_batch_sizes):
+        raise ValueError(f"mini_batch_sizes must be a non-empty list of positive ints, got {mini_batch_sizes}.")
+    if sum(mini_batch_sizes) != values.numel():
+        raise ValueError(
+            f"mini_batch_sizes {mini_batch_sizes} sum to {sum(mini_batch_sizes)}, "
+            f"but this rank holds {values.numel()} samples."
+        )
+    if len(mini_batch_sizes) == 1:
+        return whiten_scalar(values, process_group=process_group)
+    out, start = [], 0
+    for size in mini_batch_sizes:
+        out.append(whiten_scalar(values[start : start + size], process_group=process_group))
+        start += size
+    return torch.cat(out)
+
+
+def advantage_gdpo(args: Any, *, rewards, kl, process_group=None, mini_batch_sizes=None, **_unused):
     """GDPO step 3: whiten the combined per-sample advantage, then broadcast.
 
     Steps 1 and 2 (per-reward group standardisation and the weighted sum) ran
@@ -88,7 +116,8 @@ def advantage_gdpo(args: Any, *, rewards, kl, process_group=None, **_unused):
     tail flushes.
     """
     reward_tensor = _as_reward_tensor(rewards, kl)
-    returns = get_grpo_returns(whiten_scalar(reward_tensor, process_group=process_group), kl)
+    whitened = _whiten_by_segment(reward_tensor, mini_batch_sizes, process_group)
+    returns = get_grpo_returns(whitened, kl)
     advantages = list(returns)
     return advantages, returns
 
@@ -164,8 +193,13 @@ def compute_advantages_and_returns(
     total_lengths: list[int] | None = None,
     values: list[torch.Tensor] | None = None,
     process_group: dist.ProcessGroup | None = None,
+    mini_batch_sizes: list[int] | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Dispatch to the estimator registered for ``args.advantage_estimator``.
+
+    ``mini_batch_sizes`` is this rank's per-training-batch sample counts, in the
+    order the caller merged them. Only estimators whose statistics are defined
+    per batch read it; the rest absorb it in ``**_unused`` and are unaffected.
 
     ``process_group`` is the group across which the batch is sharded, or
     ``None`` when the caller holds every sample. Estimators that compute batch-
@@ -182,4 +216,5 @@ def compute_advantages_and_returns(
         total_lengths=total_lengths,
         values=values,
         process_group=process_group,
+        mini_batch_sizes=mini_batch_sizes,
     )

@@ -573,3 +573,106 @@ def test_whitening_scope_is_whatever_the_caller_passes_not_a_training_batch():
     # the deviation from Eq. 6 the docs now describe.
     assert merged[:4].max() < 0, "merged whitening puts the whole first batch below the mean"
     assert torch.allclose(separate[:4], separate[4:], atol=1e-5), "per-batch whitening treats them alike"
+
+
+# ---------------- step 3 now normalises per training batch ----------------
+
+
+def _gdpo_adv(rewards, mini_batch_sizes=None):
+    from relax.algorithms.advantages import compute_advantages_and_returns
+
+    kl = [torch.zeros(1) for _ in rewards]
+    adv, _ = compute_advantages_and_returns(
+        SimpleNamespace(advantage_estimator="gdpo", kl_coef=0.0),
+        rewards=list(rewards),
+        kl=kl,
+        mini_batch_sizes=mini_batch_sizes,
+    )
+    return torch.cat(adv)
+
+
+def test_step_three_normalises_each_training_batch_separately():
+    """Eq.
+
+    6's boundary. The caller merges num_rollout_minis batches before the
+    advantage stage, so without the counts one whitening covered all of them.
+    """
+    from relax.algorithms.advantages import whiten_scalar
+
+    first, second = [0.9, 1.1, 0.8, 1.2], [-1.2, -0.8, -1.1, -0.9]
+    got = _gdpo_adv(first + second, mini_batch_sizes=[4, 4])
+    want = torch.cat([whiten_scalar(torch.tensor(first)), whiten_scalar(torch.tensor(second))])
+    torch.testing.assert_close(got, want, rtol=1e-6, atol=1e-6)
+
+
+def test_merging_the_batches_would_flip_signs_not_just_rescale():
+    """Why the boundary matters: it decides which samples are reinforced.
+
+    Whitening the two batches together centres both on the pooled mean, so
+    samples that were below their own batch's mean come out positive. Four of
+    these eight change sign -- this is a different objective, not a precision
+    difference.
+    """
+    first, second = [0.9, 1.1, 0.8, 1.2], [-1.2, -0.8, -1.1, -0.9]
+    per_batch = _gdpo_adv(first + second, mini_batch_sizes=[4, 4])
+    merged = _gdpo_adv(first + second, mini_batch_sizes=None)
+
+    assert int((per_batch.sign() != merged.sign()).sum()) == 4
+
+
+def test_a_single_batch_is_unchanged_by_the_counts():
+    """num_rollout_minis == 1 is the common case and must not move."""
+    rewards = [1.0, 2.0, 3.0, 4.0]
+    torch.testing.assert_close(_gdpo_adv(rewards, [4]), _gdpo_adv(rewards, None))
+
+
+def test_counts_that_do_not_cover_the_shard_are_rejected():
+    """Silently whitening the wrong window is the failure this replaces."""
+    with pytest.raises(ValueError, match="sum to"):
+        _gdpo_adv([1.0, 2.0, 3.0, 4.0], mini_batch_sizes=[3, 3])
+
+
+@pytest.mark.parametrize("estimator", ["grpo", "gspo", "sapo", "cispo"])
+def test_other_estimators_ignore_the_batch_counts(estimator):
+    """They absorb it in **_unused, so passing it must be bit-identical."""
+    from relax.algorithms.advantages import compute_advantages_and_returns
+
+    args = SimpleNamespace(advantage_estimator=estimator, kl_coef=0.0)
+    inputs = dict(rewards=[1.0, -1.0, 0.5, -0.5], kl=[torch.zeros(2) for _ in range(4)])
+
+    without, _ = compute_advantages_and_returns(args, **inputs)
+    with_counts, _ = compute_advantages_and_returns(args, mini_batch_sizes=[2, 2], **inputs)
+
+    for left, right in zip(without, with_counts, strict=True):
+        assert torch.equal(left, right)
+
+
+def test_all_zero_weights_are_rejected():
+    """Every component times zero is a batch of zero advantages and a clean
+    exit."""
+    from relax.algorithms.rewards import resolve_gdpo_weights
+
+    with pytest.raises(ValueError, match="all zero"):
+        resolve_gdpo_weights(_args(weights=[0.0, 0.0]), ["correctness", "format"])
+
+
+def test_one_zero_weight_is_allowed():
+    """Muting a component is a legitimate configuration; only muting all is
+    not."""
+    from relax.algorithms.rewards import resolve_gdpo_weights
+
+    assert resolve_gdpo_weights(_args(weights=[1.0, 0.0]), ["correctness", "format"]) == [1.0, 0.0]
+
+
+@pytest.mark.parametrize("bad", [[], [0, 4], [2.5, 1.5], [-1, 5]])
+def test_malformed_batch_sizes_raise_rather_than_falling_back(bad):
+    """An empty or malformed list must not quietly restore merged whitening."""
+    with pytest.raises(ValueError, match="positive ints"):
+        _gdpo_adv([1.0, 2.0, 3.0, 4.0], mini_batch_sizes=bad)
+
+
+def test_a_single_segment_is_still_size_checked():
+    """[4] on a 5-sample shard is a real mismatch, not a request to use one
+    window."""
+    with pytest.raises(ValueError, match="sum to"):
+        _gdpo_adv([1.0, 2.0, 3.0, 4.0, 5.0], mini_batch_sizes=[4])
