@@ -45,11 +45,26 @@ def _log_group_once(process_group: dist.ProcessGroup | None) -> None:
 STD_EPS = 1e-6
 """Epsilon added to a standard deviation before dividing by it.
 
-Matches the value the pre-registry GRPO path used, so group standardisation is
-numerically identical across every algorithm in this repository.  Upstream
-implementations disagree (the GDPO paper writes no epsilon at all, TRL uses
-1e-4, verl 1e-6, ms-swift 1e-8); internal consistency wins over cross-framework
-parity because it is what makes the equivalence tests meaningful.
+Matches the value the pre-registry GRPO path used, so GRPO, GSPO, SAPO and
+CISPO keep producing exactly the numbers they produced before the registry
+existed.  That parity is the whole point of the equivalence tests, so this
+constant is not free to move.
+"""
+
+GDPO_EPS = 1e-4
+"""Epsilon for GDPO's two standardisation steps.
+
+Deliberately not :data:`STD_EPS`.  The reference implementation
+(``trl/trainer/grpo_trainer.py``, the ``scale_rewards`` GDPO path) divides by
+``std + 1e-4`` at both the per-reward group step and the batch step, and GDPO
+is new here, so there is no prior Relax behaviour that matching it would break.
+
+The choice only bites near-degenerate groups: with binary rewards and eight
+samples the group std is around 0.4 and the two constants differ by 0.02%, but
+a continuous reward (the paper's maths setup uses response length) can leave a
+group with std ~1e-3, where 1e-6 and 1e-4 disagree by roughly 10% on the scale
+factor.  Exactly-collapsed groups never reach either constant; they are caught
+by :func:`is_collapsed` and zeroed.
 """
 
 
@@ -103,28 +118,51 @@ def distributed_mean_std(
     ``process_group``.
 
     Each rank holds its own shard of the batch, so a local ``std()`` would give
-    every rank a different scale factor.  Reducing ``count/sum/sumsq`` makes the
+    every rank a different scale factor.  Reducing across the group makes the
     statistics describe the whole batch, which is what the framework already
     does for ``--normalize-advantages`` (see
     ``relax.utils.distributed_utils.distributed_masked_whiten``).
+
+    Two passes, in float64.  The one-pass form ``E[x^2] - E[x]^2`` subtracts two
+    nearly equal large numbers when the values sit far from zero, and the result
+    is dominated by rounding: for ``[1000.0, 1000.01, 1000.02, 1000.03]`` it
+    returns a variance of exactly 0 (true std 1.29e-2), and for the same spread
+    around 1e4 it returns std 4.6 instead of 1.3e-3 — off by a factor of 3660.
+    Neither is loud.  The first silently zeroes every advantage in the batch;
+    the second silently rescales them.  Reward magnitudes like these are
+    ordinary: the GDPO paper's own maths setup uses a length reward, and token
+    counts live in the thousands.
+
+    The extra collective is two scalars, which is not worth optimising away.
     """
     _log_group_once(process_group)
 
-    total = values.sum()
-    total_sq = (values * values).sum()
-    count = torch.tensor(float(values.numel()), dtype=values.dtype, device=values.device)
+    # float64 throughout: the cancellation above is a precision problem, and
+    # doing the arithmetic in the caller's float32 reintroduces it even with the
+    # two-pass formula.
+    work = values.double()
+    count = torch.tensor(float(work.numel()), dtype=torch.float64, device=work.device)
+    total = work.sum()
 
     if process_group is not None:
-        stats = torch.stack([count, total, total_sq])
-        dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=process_group)
-        count, total, total_sq = stats[0], stats[1], stats[2]
+        first = torch.stack([count, total])
+        dist.all_reduce(first, op=dist.ReduceOp.SUM, group=process_group)
+        count, total = first[0], first[1]
 
     if count == 0:
         zero = torch.zeros((), dtype=values.dtype, device=values.device)
         return zero, zero
 
     mean = total / count
+    # Centred before squaring, so no large offset survives into the sum.
+    sum_sq_dev = (work - mean).pow(2).sum()
+    if process_group is not None:
+        dist.all_reduce(sum_sq_dev, op=dist.ReduceOp.SUM, group=process_group)
+
     # Bessel-corrected, matching torch.std()'s default so the single-reward GDPO
     # scale factor stays derivable from the GRPO group statistics.
-    variance = (total_sq - count * mean * mean) / torch.clamp(count - 1, min=1.0)
-    return mean, torch.sqrt(torch.clamp(variance, min=0.0))
+    variance = sum_sq_dev / torch.clamp(count - 1, min=1.0)
+    # variance cannot be negative now that it is a sum of squares; the clamp is
+    # only guarding the exactly-zero case against a -0.0.
+    std = torch.sqrt(torch.clamp(variance, min=0.0))
+    return mean.to(values.dtype), std.to(values.dtype)

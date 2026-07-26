@@ -201,8 +201,11 @@ def test_distributed_mean_std_without_a_group_matches_torch():
 
 def test_whiten_scalar_matches_manual_formula_without_a_group():
     values = torch.tensor([1.0, 2.0, 4.0, 8.0])
-    expected = (values - values.mean()) / (values.std() + 1e-6)
-    assert torch.allclose(whiten_scalar(values), expected, atol=1e-5)
+    # 1e-4, not the GRPO path's 1e-6: whiten_scalar is GDPO step 3 and matches
+    # the reference implementation's epsilon. Hardcoded rather than imported so
+    # the test would notice the constant moving.
+    expected = (values - values.mean()) / (values.std() + 1e-4)
+    assert torch.allclose(whiten_scalar(values), expected, atol=1e-6)
 
 
 def test_sharded_whitening_differs_from_local_whitening():

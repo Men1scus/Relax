@@ -19,7 +19,7 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 
-from relax.algorithms.numerics import STD_EPS, distributed_mean_std, is_collapsed
+from relax.algorithms.numerics import GDPO_EPS, distributed_mean_std, is_collapsed
 from relax.algorithms.spec import get_algorithm
 from relax.utils.training.ppo_utils import (
     get_advantages_and_returns_batch,
@@ -51,7 +51,7 @@ def whiten_scalar(values: torch.Tensor, *, process_group: dist.ProcessGroup | No
     mean, std = distributed_mean_std(values, process_group=process_group)
     if not torch.isfinite(std):
         return torch.zeros_like(values)
-    return (values - mean) / (std + STD_EPS)
+    return (values - mean) / (std + GDPO_EPS)
 
 
 def _as_reward_tensor(rewards: Any, kl: list[torch.Tensor]) -> torch.Tensor:

@@ -74,8 +74,12 @@ def _manual_gdpo(correctness, fmt, groups, weights=(1.0, 1.0)):
             std = math.sqrt(var)
             scale = max(abs(v) for v in vals)
             collapsed = std <= 1e-6 * scale
+            # 1e-4, hardcoded on purpose: this oracle exists to pin parity with
+            # the reference implementation (trl grpo_trainer.py's scale_rewards
+            # GDPO path divides by std + 1e-4 at both steps), so importing our
+            # own constant here would make the test agree with itself.
             for i in idx:
-                out[i] = 0.0 if collapsed else (column[i] - mean) / (std + 1e-6)
+                out[i] = 0.0 if collapsed else (column[i] - mean) / (std + 1e-4)
         per_key.append(out)
     return [weights[0] * a + weights[1] * b for a, b in zip(per_key[0], per_key[1], strict=True)]
 
@@ -139,17 +143,25 @@ def test_component_scale_does_not_leak_into_the_combination():
     with_unit = _normalize(_args(), _mk(groups, correctness, unit))
     with_large = _normalize(_args(), _mk(groups, correctness, thousandfold))
 
-    assert torch.allclose(torch.tensor(with_unit), torch.tensor(with_large), atol=1e-5)
+    # Not exactly a no-op: the additive epsilon does not scale with the data, so
+    # a 1000x rescale leaks about eps/std = 1e-4/1.291 = 7.7e-5. Measured 9.0e-5.
+    assert torch.allclose(torch.tensor(with_unit), torch.tensor(with_large), atol=1e-4)
 
 
 def test_eps_makes_scale_invariance_approximate_for_tiny_rewards():
     """Documented limitation of the additive epsilon, shared with the GRPO
     path.
 
-    Dividing by ``std + 1e-6`` is only scale-free while ``std >> eps``.  A
-    reward component whose spread is ~1e-3 is shrunk by roughly eps/std, here
-    ~0.08%. Rewards that small are unusual, but the behaviour should be pinned
-    down rather than discovered later.
+    Dividing by ``std + eps`` is only scale-free while ``std >> eps``, and GDPO
+    uses ``eps = 1e-4`` to match the reference implementation rather than the
+    ``1e-6`` the GRPO path uses. That choice is not free: a component whose
+    spread is ~1e-3 is shrunk by roughly eps/std, which at 1e-4 is **7.2%**
+    against 0.08% at 1e-6.
+
+    So a continuous reward with a very narrow spread -- the paper's maths setup
+    scores response length -- is damped noticeably more here than a reader
+    coming from the GRPO path would expect. Pinning the number is the point;
+    if it ever needs to be configurable, this is the test that says why.
     """
     groups = [0, 0, 0, 0]
     correctness = [1.0, 0.0, 1.0, 0.0]
@@ -157,8 +169,8 @@ def test_eps_makes_scale_invariance_approximate_for_tiny_rewards():
     normal = _normalize(_args(), _mk(groups, correctness, [1.0, 2.0, 3.0, 4.0]))
     tiny = _normalize(_args(), _mk(groups, correctness, [0.001, 0.002, 0.003, 0.004]))
 
-    assert not torch.allclose(torch.tensor(normal), torch.tensor(tiny), atol=1e-5)
-    assert torch.allclose(torch.tensor(normal), torch.tensor(tiny), atol=5e-3)
+    deviation = (torch.tensor(normal) - torch.tensor(tiny)).abs().max()
+    assert 0.07 < float(deviation) < 0.09, f"expected ~7% damping from eps=1e-4, got {float(deviation)}"
 
 
 def test_default_weights_are_all_ones():
@@ -199,7 +211,7 @@ def test_fully_collapsed_group_yields_exact_zeros_without_nan():
 
 
 def test_collapsed_group_does_not_leak_fp32_residual():
-    """0.7 repeated 7x produces +-5.6e-2 if you rely on `/(std + 1e-6)` alone."""
+    """0.7 repeated 7x produces a nonzero residual if you rely on `/(std + eps)` alone."""
     samples = _mk([0] * 7, [0.7] * 7, [0.7] * 7)
     got = _normalize(_args(n=7), samples)
     assert got == [0.0] * 7
@@ -221,7 +233,7 @@ def _grpo_reference(summed, groups):
         var = sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)
         std = math.sqrt(var)
         for i in idx:
-            out[i] = 0.0 if std == 0 else (summed[i] - mean) / (std + 1e-6)
+            out[i] = 0.0 if std == 0 else (summed[i] - mean) / (std + 1e-4)
     return out
 
 
@@ -470,3 +482,62 @@ def test_component_with_small_relative_spread_is_kept():
 
     fmt_only = _manual_gdpo([0.0] * 4, fmt, groups)
     assert not torch.allclose(torch.tensor(got), torch.tensor(fmt_only), atol=1e-3)
+
+
+# ---------------- batch statistics must survive a large offset ----------------
+#
+# distributed_mean_std used the one-pass E[x^2] - E[x]^2 form in the caller's
+# float32. That subtracts two nearly equal large numbers whenever the values sit
+# far from zero, and it failed silently in two different directions. Neither is
+# hypothetical: the GDPO paper's maths setup uses a length reward, and token
+# counts live exactly in this range.
+
+
+def test_batch_std_survives_a_large_offset():
+    """One-pass returned exactly 0 here, which reads as a collapsed batch."""
+    from relax.algorithms.numerics import distributed_mean_std
+
+    values = torch.tensor([1000.0, 1000.01, 1000.02, 1000.03])
+    _mean, std = distributed_mean_std(values)
+
+    assert std > 0, "a batch with real spread was reported as collapsed"
+    # rtol at float32 resolution, not float64: the statistic is computed in
+    # float64 but handed back in the caller's dtype.
+    torch.testing.assert_close(std.double(), values.double().std(), rtol=1e-6, atol=0)
+
+
+def test_batch_std_is_not_inflated_by_a_large_offset():
+    """One-pass returned 4.6 here against a true std of 1.3e-3."""
+    from relax.algorithms.numerics import distributed_mean_std
+
+    values = torch.tensor([10000.0, 10000.001, 10000.002, 10000.003])
+    _mean, std = distributed_mean_std(values)
+
+    torch.testing.assert_close(std.double(), values.double().std(), rtol=1e-6, atol=0)
+    assert std < 1e-2, f"std inflated to {float(std)}; advantages would be rescaled by ~1/{float(std):.3g}"
+
+
+@pytest.mark.parametrize("offset", [0.0, 1e2, 1e3, 1e4])
+def test_whitening_is_shift_invariant(offset):
+    """Whitening centres before scaling, so adding a constant to every value
+    must not change the result.
+
+    One-pass broke this well before float32 ran out of significand.
+    """
+    from relax.algorithms.advantages import whiten_scalar
+
+    base = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    torch.testing.assert_close(whiten_scalar(base + offset), whiten_scalar(base), rtol=1e-5, atol=1e-6)
+
+
+def test_batch_std_matches_torch_std_on_ordinary_input():
+    """The fix must not move the numbers the existing algorithms already
+    produce."""
+    from relax.algorithms.numerics import distributed_mean_std
+
+    torch.manual_seed(20260726)
+    for n in (2, 4, 8, 64):
+        values = torch.randn(n)
+        mean, std = distributed_mean_std(values)
+        torch.testing.assert_close(mean, values.mean(), rtol=1e-6, atol=0)
+        torch.testing.assert_close(std, values.std(), rtol=1e-6, atol=0)

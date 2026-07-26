@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 import torch
 
-from relax.algorithms.numerics import STD_EPS, collapsed_columns
+from relax.algorithms.numerics import GDPO_EPS, STD_EPS, collapsed_columns
 from relax.utils.logging_utils import get_logger
 
 
@@ -170,7 +170,7 @@ def normalize_gdpo_decoupled(args: Any, samples: list[Any], raw_rewards: list[fl
         centered = group - group.mean(dim=0, keepdim=True)
         std = group.std(dim=0)
         collapsed = collapsed_columns(group, dim=0)
-        scaled = centered / (std + GROUP_EPS)
+        scaled = centered / (std + GDPO_EPS)
         normalized[positions] = torch.where(collapsed.unsqueeze(0), torch.zeros_like(scaled), scaled)
         if bool(collapsed.all()):
             fully_collapsed_groups += 1
