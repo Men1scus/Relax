@@ -141,3 +141,16 @@ def test_every_spec_identifier_resolves_to_a_registered_implementation():
         assert spec.reward_normalizer in REWARD_NORMALIZERS, name
         assert spec.advantage_fn in ADVANTAGE_FNS, name
         assert spec.policy_loss_fn in POLICY_LOSS_FNS, name
+
+
+def test_every_spec_declares_a_kl_level_the_loss_knows_how_to_read():
+    """``kl_level`` has no dispatch table to fail against.
+
+    ``relax/backends/megatron/loss.py`` reads it as ``== "sequence"``, so a
+    misspelled value does not raise -- it silently selects token-level KL and
+    the run trains the wrong objective while reporting the right algorithm
+    name. The three fields above cannot fail that way because a bad key raises
+    on lookup; this one needs the check written out.
+    """
+    for name in list_algorithm_names():
+        assert get_algorithm(name).kl_level in ("token", "sequence"), name
