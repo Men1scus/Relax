@@ -47,10 +47,12 @@ def whiten_scalar(values: torch.Tensor, *, process_group: dist.ProcessGroup | No
     for GDPO, since ``supports_fully_async=False`` rejects the configuration that
     would route here — so in practice ``None`` is the CPU-side and test callers.
 
-    Note what this does *not* give you: because the caller merges the rollout
-    before calling, the statistic spans ``num_rollout_minis`` optimizer steps
-    rather than one training batch.  Eq. 6 is per batch, so the two coincide only
-    when ``rollout_batch_size * n_samples_per_prompt == global_batch_size``.
+    Scope of one call: this whitens exactly the tensor it is handed.  When the
+    caller has merged several training batches, :func:`_whiten_by_segment` splits
+    them back and calls this once per optimizer batch, so each call stays aligned
+    with Eq. 6's per-batch statistic regardless of ``num_rollout_minis``.  Only
+    the un-segmented path (``mini_batch_sizes=None``) whitens a whole merged
+    tensor at once.
 
     A batch where every value is identical returns exact zeros; see
     :func:`relax.algorithms.numerics.is_collapsed`.

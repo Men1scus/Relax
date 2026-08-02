@@ -108,7 +108,9 @@ _PPO_DISABLED = (
     "PPO (Proximal Policy Optimization) is no longer supported in Relax. "
     "Please use one of the following advantage estimators instead: {alternatives}."
 )
-"""Formatted lazily by :func:`get_algorithm`.
+"""Formatted with the runnable alternatives by the algorithm validation in
+``relax/utils/arguments.py`` before it raises (not by :func:`get_algorithm`,
+which only looks the spec up).
 
 The alternatives used to be spelled out here, which made this the last
 hand-maintained algorithm-name list in the repository -- and it was already one

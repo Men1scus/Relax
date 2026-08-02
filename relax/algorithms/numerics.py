@@ -78,8 +78,9 @@ def is_collapsed(values: torch.Tensor, *, process_group: dist.ProcessGroup | Non
     relative tolerance large enough to catch that also erases real signal: with
     ``std <= 1e-6 * max|x|``, the perfectly informative batch
     ``[10000, 10000.005, 10000.010, 10000.015]`` is thrown away.  Exact equality
-    has no such false positives, and near-equality is already damped by
-    :data:`STD_EPS`.
+    has no such false positives, and near-equality is already damped by the
+    caller's epsilon (:data:`GDPO_EPS` on the GDPO whitening path,
+    :data:`STD_EPS` on the group path).
     """
     if process_group is None:
         if values.numel() == 0:

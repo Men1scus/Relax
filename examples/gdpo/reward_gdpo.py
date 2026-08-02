@@ -3,9 +3,12 @@
 """Two-component reward for the GDPO example: correctness and format.
 
 GDPO standardizes each component within its prompt group before combining them,
-so a group where every rollout is correct but only some are well-formatted still
-carries a learning signal. Under GRPO the summed reward would collapse and the
-whole group would contribute nothing.
+so a group whose rollouts differ in their reward *components* but share the same
+*summed* reward still carries a learning signal. Example: (correct, badly
+formatted) and (wrong, well formatted) both sum to 1 -- GRPO sees one constant
+summed reward and the whole group contributes nothing, while GDPO keeps each
+component's signal. (If every component is constant within the group, GDPO
+returns zero too.)
 
 Wire it up with::
 

@@ -5,9 +5,11 @@
 # Qwen3-0.6B single-GPU GDPO training on GSM8K.
 #
 # GDPO (arXiv 2601.05242) standardizes each reward component within its prompt
-# group before combining them, so a group where every rollout is correct but
-# only some are well-formatted still carries signal. The reward function in
-# reward_gdpo.py returns both components; --gdpo-reward-keys names them.
+# group before combining them, so a group whose rollouts share the same summed
+# reward but differ in their components still carries signal -- e.g. (correct,
+# badly formatted) and (wrong, well formatted) both sum to 1, which GRPO flattens
+# to nothing. The reward function in reward_gdpo.py returns both components;
+# --gdpo-reward-keys names them.
 #
 # Usage:
 #   bash examples/gdpo/run-qwen3-0.6B-1xgpu-gdpo.sh
@@ -57,12 +59,10 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 8
    --rollout-max-response-len 1024
    --rollout-temperature 1.0
-   # 4 * 8 == 32, deliberately: GDPO's step 3 whitens whatever the caller hands
-   # it, and the caller merges `rollout_batch_size * n_samples_per_prompt /
-   # global_batch_size` training batches before calling. Setting these equal
-   # makes that quotient 1, so step 3 covers exactly one training batch -- the
-   # boundary Eq. 6 specifies. Change one of them without the other and the
-   # example silently starts normalizing across several optimizer steps.
+   # 4 * 8 == 32 just keeps this example minimal. GDPO's step 3 stays aligned
+   # with Eq. 6 regardless: _whiten_by_segment splits any merged rollout back
+   # into per-optimizer-batch segments and whitens each on its own, so
+   # num_rollout_minis > 1 does NOT require rollout_batch_size * n == gbs.
    --global-batch-size 32
 )
 

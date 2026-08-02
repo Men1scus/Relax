@@ -11,9 +11,9 @@
 
 这两个分量会**不同步**：模型可能答对但没按格式输出，也可能格式完美但答错。
 
-GRPO 把它们加起来再做一次组内归一化。一旦某组的**总奖励**全相同（比如 8 条 rollout 全对、格式也全对），整组 advantage 归零，这 8 条样本白采了。
+GRPO 把它们**加起来**再做一次组内归一化。问题是不同的分量组合可能得到**相同的总和**：一组 rollout 里，有的是「答对但格式差」`(correctness=1, format=0)`、有的是「答错但格式好」`(0, 1)`，总奖励都等于 1——GRPO 看到组内总奖励全相同，整组 advantage 归零、样本白采，可两个分量各自明明都有信号。
 
-GDPO 分别对每个分量做组内标准化，再合并。同样这一组：`correctness` 塌缩、贡献 0，但只要 `format` 还有差异，梯度信号就还在。
+GDPO 分别对每个分量做组内标准化再合并，就能区分这两类样本，`correctness` 与 `format` 各自的差异都会转成梯度信号。（反过来，若两个分量在组内**都**恒定，GDPO 与 GRPO 一样返回零，不会无中生有。）
 
 ## 运行
 
@@ -63,8 +63,8 @@ GDPO_ARGS=(
 
 ## 已知偏差
 
-1. **第三步的 batch 边界**。第三步白化的是调用方交给它的那一批，而调用方会先把 `rollout_batch_size × n_samples_per_prompt / global_batch_size` 个训练批合并起来再调用。本脚本把 `4 × 8` 和 `--global-batch-size 32` 设成相等，**这个商就是 1**，于是第三步恰好覆盖一个训练批（论文 Eq. 6 的边界）。改动其中一个而不改另一个，示例就会静默地跨多个 optimizer step 做归一化——`docs/*/examples/algorithms.md` 的已知偏差一节写了通用情形。跨 DP 的 all-reduce 保证统计量覆盖全部 rank。**`--fully-async` 会在参数校验阶段被拒绝**——那条路径的切片可能小到只有一个样本，白化输出恒为 0。
-2. **单个奖励时 GDPO 不等于 GRPO**，差一个正标量。要 GRPO 语义就用 `--advantage-estimator grpo`。
+1. **第三步的 batch 边界（已正确处理）**。调用方为效率会先合并多个训练批再调用 advantage，但 `_whiten_by_segment` 用 `mini_batch_sizes` 把它们切回**每个 optimizer 训练批各自白化**，因此 `num_rollout_minis > 1` 时仍对齐论文 Eq. 6，**不要求** `rollout_batch_size × n_samples_per_prompt == global_batch_size`。本脚本把 `4 × 8` 与 `--global-batch-size 32` 设成相等只是让例子最简单，并非必需。跨 DP 的 all-reduce 保证统计量覆盖全部 rank。**`--fully-async` 会在参数校验阶段被拒绝**——那条路径的切片可能小到只有一个样本，白化输出恒为 0。
+2. **单个奖励时 GDPO 不等于 GRPO**。step1 除以 `std_g + 1e-4`、GRPO 除以 `std_g + 1e-6`，各组 `std_g` 不同 → 尺度因子逐组不同，step3 还会再做一次 batch 白化，所以不是「差一个正标量」那么简单。要 GRPO 语义就用 `--advantage-estimator grpo`。
 3. **`--n-samples-per-prompt 2` 时幅度信息丢失**：任意两个不同值标准化后恒为 ±0.7071。示例用 8 就是为了避开这一点。
 
 ## 冲突项
